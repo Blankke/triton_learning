@@ -1,0 +1,96 @@
+# Triton Learning
+
+本项目用于完成 `问题1：Triton矩阵乘算子融合`，并且严格按 `问题1.md` 的三个阶段推进：
+
+1. Step 1：用 PyTorch 建立 baseline，测量 `X@A`、`Y@B`、`X@C` 和最终加法的总时间。
+2. Step 2：基于 Triton 官方 matmul 教程实现主干 GEMM，并与 PyTorch/cuBLAS 对比。
+3. Step 3：参考 `docs/Punica...md` 中记录的 Punica expand 思想，先做单 LoRA 场景的全流程验证：baseline 为 `X@C + (X@A)@B`，fused 路径为先算 `Y=X@A`，再在同一个 Triton kernel 中计算 `X@C + Y@B`，不加入 SGMV / 多 LoRA 逻辑。
+
+## 当前目录结构
+
+```text
+src/triton_learning/
+├── benchmark_utils.py          # CUDA 计时、CSV 输出等公共逻辑
+├── problem_spec.py             # 问题1统一形状配置
+├── reference_ops.py            # PyTorch 参考实现
+├── bench_step1_baseline.py     # Step 1 baseline 入口
+├── bench_step2_triton_matmul.py# Step 2 benchmark 入口
+├── bench_step3_fused_expand.py # Step 3 benchmark 入口
+└── kernels/
+    ├── matmul.py               # Triton 教程风格主干 GEMM
+    └── fused_matmul_expand.py  # 单 LoRA 融合 kernel
+```
+
+## 实现细节
+
+### Step 1
+
+- 目标形状按 `问题1.md` 当前要求固定为 `M=64, H=4096, N=28672, r=8`，对应 gateup_proj baseline。
+- 参考实现统一放在 `reference_ops.py`，避免 Step 2/3 各自维护一份公式。
+- `bench_step1_baseline.py` 同时输出：
+  - 每个算子的单独耗时
+  - 分项相加耗时
+  - 完整串行流程 `O = X@C + (X@A)@B` 的总时间
+
+### Step 2
+
+- 主干 GEMM 的 Triton kernel 位于 `src/triton_learning/kernels/matmul.py`。
+- kernel 结构遵循 `docs/Matmul.md` 中已经整理过的几个关键点：
+  - tile 化分块
+  - grouped ordering
+  - fp32 accumulator
+  - autotune 搜索不同 block 配置
+- `bench_step2_triton_matmul.py` 会先验证 Triton 与 PyTorch 输出一致，再比较耗时与 TFLOPS。
+
+参考学习资料：
+- `问题1.md` 中的 Triton 官方 matmul 教程链接
+- `docs/Matmul.md`
+
+### Step 3
+
+- 本阶段先不做多 LoRA，也不做 segment / weight_indices / sorted_token_ids。
+- 只做单 adapter 版本，并且 benchmark 对齐 Step 1 的完整流程：
+  - baseline：`O = X @ C + (X @ A) @ B`
+  - fused：先算 `Y = X @ A`，再在同一个 Triton kernel 内计算 `O = X @ C + Y @ B`
+- `src/triton_learning/kernels/fused_matmul_expand.py` 的实现依据：
+  - `docs/fusion.md` 里“两个 reduction 维度不同，但输出 tile 相同，因此可以在同一 tile 上累加”的笔记
+  - `docs/Punica...md` 里对 Punica expand 加载 `Y` / `B` 并写回输出 tile 的记录
+
+参考学习资料：
+- `docs/fusion.md`
+- `docs/Punicaú║Multi-Tenant LoRA Serving.md`
+
+## 复现方法
+
+先进入虚拟环境并确认 Python 解释器：
+
+```bash
+cd /home/starrys/triton_learning
+source /home/starrys/venv/3DRF/bin/activate
+which python
+python -c "import sys; print(sys.executable)"
+```
+
+执行 Step 1：
+
+```bash
+bash scripts/run_step1_baseline.sh
+```
+
+执行 Step 2：
+
+```bash
+bash scripts/run_step2_triton_matmul.sh
+```
+
+执行 Step 3：
+
+```bash
+bash scripts/run_step3_fused_expand.sh
+```
+
+如果需要自定义形状，可以在脚本前传环境变量，例如：
+
+```bash
+M=64 H=4096 N=28672 R=8 DTYPE=fp16 WARMUP=30 REPEAT=100 bash scripts/run_step3_fused_expand.sh
+```

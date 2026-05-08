@@ -1,0 +1,9 @@
+*.md
+docs/
+outputs/
+*.log
+*.tmp
+*.bak
+*.swp
+*.pyc
+__pycache__/
