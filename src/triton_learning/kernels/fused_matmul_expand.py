@@ -28,29 +28,29 @@ from triton_learning.kernels.matmul import matmul_autotune_configs
 )
 @triton.jit
 def _fused_matmul_expand_kernel(
-    x_ptr,
-    c_ptr,
-    y_ptr,
-    b_ptr,
-    o_ptr,
-    M: tl.constexpr,
-    N: tl.constexpr,
-    K: tl.constexpr,
-    R: tl.constexpr,
-    stride_xm: tl.constexpr,
-    stride_xk: tl.constexpr,
-    stride_ck: tl.constexpr,
-    stride_cn: tl.constexpr,
-    stride_ym: tl.constexpr,
-    stride_yr: tl.constexpr,
-    stride_br: tl.constexpr,
-    stride_bn: tl.constexpr,
-    stride_om: tl.constexpr,
-    stride_on: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
+    x_ptr,  # 输入矩阵 X 的首地址，形状为 [M, K]
+    c_ptr,  # 主干权重矩阵 C 的首地址，形状为 [K, N]
+    y_ptr,  # LoRA 中间结果矩阵 Y 的首地址，形状为 [M, R]
+    b_ptr,  # LoRA expand 权重矩阵 B 的首地址，形状为 [R, N]
+    o_ptr,  # 输出矩阵 O 的首地址，形状为 [M, N]
+    M: tl.constexpr,  # 输出行数，也是 X / Y / O 的第 0 维
+    N: tl.constexpr,  # 输出列数，也是 C / B / O 的第 1 维
+    K: tl.constexpr,  # 主干 GEMM 的 reduction 维，对应 X 的列数与 C 的行数
+    R: tl.constexpr,  # LoRA expand 的 reduction 维，对应 Y 的列数与 B 的行数
+    stride_xm: tl.constexpr,  # X 沿第 0 维（行方向）的 stride
+    stride_xk: tl.constexpr,  # X 沿第 1 维（K 方向）的 stride
+    stride_ck: tl.constexpr,  # C 沿第 0 维（K 方向）的 stride
+    stride_cn: tl.constexpr,  # C 沿第 1 维（列方向）的 stride
+    stride_ym: tl.constexpr,  # Y 沿第 0 维（行方向）的 stride
+    stride_yr: tl.constexpr,  # Y 沿第 1 维（R 方向）的 stride
+    stride_br: tl.constexpr,  # B 沿第 0 维（R 方向）的 stride
+    stride_bn: tl.constexpr,  # B 沿第 1 维（列方向）的 stride
+    stride_om: tl.constexpr,  # O 沿第 0 维（行方向）的 stride
+    stride_on: tl.constexpr,  # O 沿第 1 维（列方向）的 stride
+    BLOCK_SIZE_M: tl.constexpr,  # 单个 program 在 M 方向一次处理多少行
+    BLOCK_SIZE_N: tl.constexpr,  # 单个 program 在 N 方向一次处理多少列
+    BLOCK_SIZE_K: tl.constexpr,  # 两个 reduction 循环共用的分块深度
+    GROUP_SIZE_M: tl.constexpr,  # program id 分组参数，用于提升 L2 cache 命中
 ):
     """
     先算主干 GEMM，再把 expand 分支累加到同一个输出 tile。
