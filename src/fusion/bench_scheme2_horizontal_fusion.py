@@ -24,6 +24,7 @@ from fusion.common import (
     parse_common_args,
     print_error_report,
     print_shape,
+    run_pytorch_pair,
     run_pytorch_full_pipeline,
     shape_from_args,
 )
@@ -66,6 +67,9 @@ def main() -> None:
     def run_pytorch_full() -> torch.Tensor:
         return run_pytorch_full_pipeline(inputs)
 
+    def run_pytorch_pair_once() -> tuple[torch.Tensor, torch.Tensor]:
+        return run_pytorch_pair(inputs)
+
     def run_baseline_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
 
@@ -81,6 +85,7 @@ def main() -> None:
         return compute_full_output(y_once, w_once, inputs.b)
 
     pytorch_full = measure_cuda_time("scheme2 pytorch full", run_pytorch_full, args.warmup, args.repeat)
+    pytorch_pair = measure_cuda_time("scheme2 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)
     baseline_pair = measure_cuda_time("scheme2 baseline Y/W", run_baseline_pair, args.warmup, args.repeat)
     fused_pair = measure_cuda_time("scheme2 horizontal Y/W", run_fused_pair, args.warmup, args.repeat)
     baseline_full = measure_cuda_time("scheme2 baseline full", run_baseline_full, args.warmup, args.repeat)
@@ -91,6 +96,9 @@ def main() -> None:
         "down_tiles": tiles_down,
         "main_tiles": tiles_main,
         "total_tiles": total_tiles,
+        "pytorch_pair_ms": pytorch_pair.median_ms,
+        "scheme_pair_ms": fused_pair.median_ms,
+        "scheme_vs_pytorch_pair_speedup": pytorch_pair.median_ms / fused_pair.median_ms,
         "pytorch_full_ms": pytorch_full.median_ms,
         "triton_serial_full_ms": baseline_full.median_ms,
         "scheme_full_ms": fused_full.median_ms,
@@ -102,6 +110,8 @@ def main() -> None:
         "fused_full_ms": fused_full.median_ms,
         "pair_speedup": baseline_pair.median_ms / fused_pair.median_ms,
         "full_speedup": baseline_full.median_ms / fused_full.median_ms,
+        "pytorch_pair_p20_ms": pytorch_pair.p20_ms,
+        "pytorch_pair_p80_ms": pytorch_pair.p80_ms,
         "pytorch_full_p20_ms": pytorch_full.p20_ms,
         "pytorch_full_p80_ms": pytorch_full.p80_ms,
         "baseline_pair_p20_ms": baseline_pair.p20_ms,
@@ -119,9 +129,11 @@ def main() -> None:
 
     print("\n方案2 benchmark 结果：")
     print_error_report(errors)
+    print(f"  PyTorch Y/W: {pytorch_pair.median_ms:.6f} ms")
     print(f"  baseline Y/W: {baseline_pair.median_ms:.6f} ms")
     print(f"  horizontal fused Y/W: {fused_pair.median_ms:.6f} ms")
-    print(f"  pair speedup: {row['pair_speedup']:.4f}")
+    print(f"  horizontal Y/W vs PyTorch speedup: {row['scheme_vs_pytorch_pair_speedup']:.4f}")
+    print(f"  horizontal Y/W vs Triton serial speedup: {row['pair_speedup']:.4f}")
     print(f"  PyTorch full: {pytorch_full.median_ms:.6f} ms")
     print(f"  baseline full: {baseline_full.median_ms:.6f} ms")
     print(f"  horizontal fused full: {fused_full.median_ms:.6f} ms")

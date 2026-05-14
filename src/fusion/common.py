@@ -103,6 +103,13 @@ def compute_references(inputs: Inputs) -> References:
     return References(y=y, w=w, o=o)
 
 
+def run_pytorch_pair(inputs: Inputs) -> tuple[torch.Tensor, torch.Tensor]:
+    """执行 PyTorch/cuBLAS 的两步输出：Y = X@A, W = X@C。"""
+    y = inputs.x @ inputs.a
+    w = inputs.x @ inputs.c
+    return y, w
+
+
 def compute_full_output(y: torch.Tensor, w: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """融合 kernel 产出 Y/W 后，继续执行后续算子2和加法。"""
     return w + y @ b

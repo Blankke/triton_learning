@@ -26,6 +26,7 @@ from fusion.common import (
     parse_common_args,
     print_error_report,
     print_shape,
+    run_pytorch_pair,
     run_pytorch_full_pipeline,
     shape_from_args,
 )
@@ -62,6 +63,9 @@ def main() -> None:
         torch.cuda.synchronize()
         errors = check_outputs(y, w, o, refs, dtype)
 
+    def run_pytorch_pair_once() -> tuple[torch.Tensor, torch.Tensor]:
+        return run_pytorch_pair(inputs)
+
     def run_sequential_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
 
@@ -80,6 +84,7 @@ def main() -> None:
         return compute_full_output(y_once, w_once, inputs.b)
 
     pytorch_full = measure_cuda_time("scheme1 pytorch full", run_pytorch_full, args.warmup, args.repeat)
+    pytorch_pair = measure_cuda_time("scheme1 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)
     sequential_pair = measure_cuda_time("scheme1 sequential Y/W", run_sequential_pair, args.warmup, args.repeat)
     concurrent_pair = measure_cuda_time("scheme1 concurrent Y/W", run_concurrent_pair, args.warmup, args.repeat)
     sequential_full = measure_cuda_time("scheme1 sequential full", run_sequential_full, args.warmup, args.repeat)
@@ -89,6 +94,9 @@ def main() -> None:
         "scheme": "scheme1_spatial_sharing",
         "down_tiles": tiles_down,
         "main_tiles": tiles_main,
+        "pytorch_pair_ms": pytorch_pair.median_ms,
+        "scheme_pair_ms": concurrent_pair.median_ms,
+        "scheme_vs_pytorch_pair_speedup": pytorch_pair.median_ms / concurrent_pair.median_ms,
         "pytorch_full_ms": pytorch_full.median_ms,
         "triton_serial_full_ms": sequential_full.median_ms,
         "scheme_full_ms": concurrent_full.median_ms,
@@ -100,6 +108,8 @@ def main() -> None:
         "concurrent_full_ms": concurrent_full.median_ms,
         "pair_speedup": sequential_pair.median_ms / concurrent_pair.median_ms,
         "full_speedup": sequential_full.median_ms / concurrent_full.median_ms,
+        "pytorch_pair_p20_ms": pytorch_pair.p20_ms,
+        "pytorch_pair_p80_ms": pytorch_pair.p80_ms,
         "pytorch_full_p20_ms": pytorch_full.p20_ms,
         "pytorch_full_p80_ms": pytorch_full.p80_ms,
         "sequential_pair_p20_ms": sequential_pair.p20_ms,
@@ -117,9 +127,11 @@ def main() -> None:
 
     print("\n方案1 benchmark 结果：")
     print_error_report(errors)
+    print(f"  PyTorch Y/W: {pytorch_pair.median_ms:.6f} ms")
     print(f"  sequential Y/W: {sequential_pair.median_ms:.6f} ms")
     print(f"  concurrent Y/W: {concurrent_pair.median_ms:.6f} ms")
-    print(f"  pair speedup: {row['pair_speedup']:.4f}")
+    print(f"  concurrent Y/W vs PyTorch speedup: {row['scheme_vs_pytorch_pair_speedup']:.4f}")
+    print(f"  concurrent Y/W vs Triton serial speedup: {row['pair_speedup']:.4f}")
     print(f"  PyTorch full: {pytorch_full.median_ms:.6f} ms")
     print(f"  sequential full: {sequential_full.median_ms:.6f} ms")
     print(f"  concurrent full: {concurrent_full.median_ms:.6f} ms")

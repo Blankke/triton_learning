@@ -9,7 +9,8 @@
     一个 Triton kernel 内部把 program id 分成两段：
         pid < num_tiles_1      -> 计算 Y = X @ A 的一个 tile
         pid >= num_tiles_1     -> 计算 W = X @ C 的一个 tile
-    该方案不做物理拼接，也不严格指定 SM，只减少一次单独 kernel launch。
+    这里直接复用 Step 2 GEMM 的调度骨架：
+        autotune + grouped ordering + fp32 accumulator
 """
 
 from __future__ import annotations
@@ -18,14 +19,19 @@ import torch
 import triton
 import triton.language as tl
 
-
-BLOCK_M_DOWN = 16
-BLOCK_N_DOWN = 16
-BLOCK_M_MAIN = 16
-BLOCK_N_MAIN = 128
-BLOCK_K = 64
+from triton_learning.kernels.matmul import matmul_autotune_configs
 
 
+REFERENCE_BLOCK_M_DOWN = 16
+REFERENCE_BLOCK_N_DOWN = 16
+REFERENCE_BLOCK_M_MAIN = 16
+REFERENCE_BLOCK_N_MAIN = 128
+
+
+@triton.autotune(
+    configs=matmul_autotune_configs(),
+    key=["M", "H", "R", "N"],
+)
 @triton.jit
 def _horizontal_fused_kernel(
     x_ptr,
@@ -37,7 +43,6 @@ def _horizontal_fused_kernel(
     H: tl.constexpr,
     R: tl.constexpr,
     N: tl.constexpr,
-    NUM_TILES_DOWN: tl.constexpr,
     stride_xm: tl.constexpr,
     stride_xh: tl.constexpr,
     stride_ah: tl.constexpr,
@@ -48,87 +53,98 @@ def _horizontal_fused_kernel(
     stride_yr: tl.constexpr,
     stride_wm: tl.constexpr,
     stride_wn: tl.constexpr,
-    BLOCK_M1: tl.constexpr,
-    BLOCK_N1: tl.constexpr,
-    BLOCK_M3: tl.constexpr,
-    BLOCK_N3: tl.constexpr,
-    BLOCK_K_SIZE: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
 ):
-    """按 pid 区间分别计算 Y tile 或 W tile。"""
+    """基于 Step 2 GEMM 骨架，用 pid 区间分别计算 Y tile 或 W tile。"""
     pid = tl.program_id(axis=0)
 
-    if pid < NUM_TILES_DOWN:
-        num_pid_n1 = tl.cdiv(R, BLOCK_N1)
-        pid_m1 = pid // num_pid_n1
-        pid_n1 = pid % num_pid_n1
+    num_pid_m_down = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n_down = tl.cdiv(R, BLOCK_SIZE_N)
+    num_tiles_down = num_pid_m_down * num_pid_n_down
 
-        offs_m1 = pid_m1 * BLOCK_M1 + tl.arange(0, BLOCK_M1)
-        offs_n1 = pid_n1 * BLOCK_N1 + tl.arange(0, BLOCK_N1)
-        offs_k1 = tl.arange(0, BLOCK_K_SIZE)
+    if pid < num_tiles_down:
+        num_pid_in_group_down = GROUP_SIZE_M * num_pid_n_down
+        group_id_down = pid // num_pid_in_group_down
+        first_pid_m_down = group_id_down * GROUP_SIZE_M
+        group_size_m_down = tl.minimum(num_pid_m_down - first_pid_m_down, GROUP_SIZE_M)
+        pid_m_down = first_pid_m_down + ((pid % num_pid_in_group_down) % group_size_m_down)
+        pid_n_down = (pid % num_pid_in_group_down) // group_size_m_down
 
-        x_ptrs1 = x_ptr + offs_m1[:, None] * stride_xm + offs_k1[None, :] * stride_xh
-        a_ptrs = a_ptr + offs_k1[:, None] * stride_ah + offs_n1[None, :] * stride_ar
-        acc1 = tl.zeros((BLOCK_M1, BLOCK_N1), dtype=tl.float32)
+        offs_m = pid_m_down * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_n = pid_n_down * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        offs_k = tl.arange(0, BLOCK_SIZE_K)
 
-        for k_start in range(0, H, BLOCK_K_SIZE):
+        x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xh
+        a_ptrs = a_ptr + offs_k[:, None] * stride_ah + offs_n[None, :] * stride_ar
+        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+
+        for k_start in range(0, H, BLOCK_SIZE_K):
             x_tile = tl.load(
-                x_ptrs1,
-                mask=(offs_m1[:, None] < M) & ((k_start + offs_k1[None, :]) < H),
+                x_ptrs,
+                mask=(offs_m[:, None] < M) & ((k_start + offs_k[None, :]) < H),
                 other=0.0,
             )
             a_tile = tl.load(
                 a_ptrs,
-                mask=((k_start + offs_k1[:, None]) < H) & (offs_n1[None, :] < R),
+                mask=((k_start + offs_k[:, None]) < H) & (offs_n[None, :] < R),
                 other=0.0,
             )
-            acc1 += tl.dot(x_tile, a_tile)
-            x_ptrs1 += BLOCK_K_SIZE * stride_xh
-            a_ptrs += BLOCK_K_SIZE * stride_ah
+            acc += tl.dot(x_tile, a_tile)
+            x_ptrs += BLOCK_SIZE_K * stride_xh
+            a_ptrs += BLOCK_SIZE_K * stride_ah
 
-        y_ptrs = y_ptr + offs_m1[:, None] * stride_ym + offs_n1[None, :] * stride_yr
-        tl.store(y_ptrs, acc1, mask=(offs_m1[:, None] < M) & (offs_n1[None, :] < R))
+        y_ptrs = y_ptr + offs_m[:, None] * stride_ym + offs_n[None, :] * stride_yr
+        tl.store(y_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < R))
         return
 
-    pid3 = pid - NUM_TILES_DOWN
-    num_pid_n3 = tl.cdiv(N, BLOCK_N3)
-    pid_m3 = pid3 // num_pid_n3
-    pid_n3 = pid3 % num_pid_n3
+    pid_main = pid - num_tiles_down
+    num_pid_m_main = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n_main = tl.cdiv(N, BLOCK_SIZE_N)
+    num_pid_in_group_main = GROUP_SIZE_M * num_pid_n_main
+    group_id_main = pid_main // num_pid_in_group_main
+    first_pid_m_main = group_id_main * GROUP_SIZE_M
+    group_size_m_main = tl.minimum(num_pid_m_main - first_pid_m_main, GROUP_SIZE_M)
+    pid_m_main = first_pid_m_main + ((pid_main % num_pid_in_group_main) % group_size_m_main)
+    pid_n_main = (pid_main % num_pid_in_group_main) // group_size_m_main
 
-    offs_m3 = pid_m3 * BLOCK_M3 + tl.arange(0, BLOCK_M3)
-    offs_n3 = pid_n3 * BLOCK_N3 + tl.arange(0, BLOCK_N3)
-    offs_k3 = tl.arange(0, BLOCK_K_SIZE)
+    offs_m = pid_m_main * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n_main * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_k = tl.arange(0, BLOCK_SIZE_K)
 
-    x_ptrs3 = x_ptr + offs_m3[:, None] * stride_xm + offs_k3[None, :] * stride_xh
-    c_ptrs = c_ptr + offs_k3[:, None] * stride_ch + offs_n3[None, :] * stride_cn
-    acc3 = tl.zeros((BLOCK_M3, BLOCK_N3), dtype=tl.float32)
+    x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xh
+    c_ptrs = c_ptr + offs_k[:, None] * stride_ch + offs_n[None, :] * stride_cn
+    acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    for k_start in range(0, H, BLOCK_K_SIZE):
+    for k_start in range(0, H, BLOCK_SIZE_K):
         x_tile = tl.load(
-            x_ptrs3,
-            mask=(offs_m3[:, None] < M) & ((k_start + offs_k3[None, :]) < H),
+            x_ptrs,
+            mask=(offs_m[:, None] < M) & ((k_start + offs_k[None, :]) < H),
             other=0.0,
         )
         c_tile = tl.load(
             c_ptrs,
-            mask=((k_start + offs_k3[:, None]) < H) & (offs_n3[None, :] < N),
+            mask=((k_start + offs_k[:, None]) < H) & (offs_n[None, :] < N),
             other=0.0,
         )
-        acc3 += tl.dot(x_tile, c_tile)
-        x_ptrs3 += BLOCK_K_SIZE * stride_xh
-        c_ptrs += BLOCK_K_SIZE * stride_ch
+        acc += tl.dot(x_tile, c_tile)
+        x_ptrs += BLOCK_SIZE_K * stride_xh
+        c_ptrs += BLOCK_SIZE_K * stride_ch
 
-    w_ptrs = w_ptr + offs_m3[:, None] * stride_wm + offs_n3[None, :] * stride_wn
-    tl.store(w_ptrs, acc3, mask=(offs_m3[:, None] < M) & (offs_n3[None, :] < N))
+    w_ptrs = w_ptr + offs_m[:, None] * stride_wm + offs_n[None, :] * stride_wn
+    tl.store(w_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 
 def down_tile_count(m: int, r: int) -> int:
-    """方案2中算子1的 program 数。"""
-    return triton.cdiv(m, BLOCK_M_DOWN) * triton.cdiv(r, BLOCK_N_DOWN)
+    """按题目分析时采用的参考块大小估算算子1 program 数。"""
+    return triton.cdiv(m, REFERENCE_BLOCK_M_DOWN) * triton.cdiv(r, REFERENCE_BLOCK_N_DOWN)
 
 
 def main_tile_count(m: int, n: int) -> int:
-    """方案2中算子3的 program 数。"""
-    return triton.cdiv(m, BLOCK_M_MAIN) * triton.cdiv(n, BLOCK_N_MAIN)
+    """按题目分析时采用的参考块大小估算算子3 program 数。"""
+    return triton.cdiv(m, REFERENCE_BLOCK_M_MAIN) * triton.cdiv(n, REFERENCE_BLOCK_N_MAIN)
 
 
 def _check_inputs(x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -159,9 +175,10 @@ def triton_horizontal_fused_down_main(x: torch.Tensor, a: torch.Tensor, c: torch
     y = torch.empty((m, r), device=x.device, dtype=x.dtype)
     w = torch.empty((m, n), device=x.device, dtype=x.dtype)
 
-    num_tiles_down = down_tile_count(m, r)
-    num_tiles_main = main_tile_count(m, n)
-    grid = (num_tiles_down + num_tiles_main,)
+    grid = lambda meta: (
+        triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(r, meta["BLOCK_SIZE_N"])
+        + triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(n, meta["BLOCK_SIZE_N"]),
+    )
 
     _horizontal_fused_kernel[grid](
         x,
@@ -173,7 +190,6 @@ def triton_horizontal_fused_down_main(x: torch.Tensor, a: torch.Tensor, c: torch
         h,
         r,
         n,
-        num_tiles_down,
         x.stride(0),
         x.stride(1),
         a.stride(0),
@@ -184,13 +200,5 @@ def triton_horizontal_fused_down_main(x: torch.Tensor, a: torch.Tensor, c: torch
         y.stride(1),
         w.stride(0),
         w.stride(1),
-        BLOCK_M_DOWN,
-        BLOCK_N_DOWN,
-        BLOCK_M_MAIN,
-        BLOCK_N_MAIN,
-        BLOCK_K,
-        num_warps=4,
-        num_stages=3,
     )
     return y, w
-

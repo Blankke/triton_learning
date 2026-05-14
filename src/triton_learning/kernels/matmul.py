@@ -49,6 +49,21 @@ def matmul_autotune_configs() -> list[triton.Config]:
     return configs
 
 
+def _validate_triton_matmul_inputs(a: torch.Tensor, b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """检查输入，并统一转为 contiguous，供复用 wrapper / launcher 使用。"""
+    if a.ndim != 2 or b.ndim != 2:
+        raise ValueError("triton_matmul 只支持二维矩阵。")
+    if a.shape[1] != b.shape[0]:
+        raise ValueError(f"矩阵形状不匹配：a={tuple(a.shape)}, b={tuple(b.shape)}")
+    if not a.is_cuda or not b.is_cuda:
+        raise ValueError("triton_matmul 需要 CUDA tensor。")
+    if a.dtype != b.dtype:
+        raise ValueError(f"a 和 b 的 dtype 必须一致：a={a.dtype}, b={b.dtype}")
+    if a.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError(f"暂不支持 dtype={a.dtype}。")
+    return a.contiguous(), b.contiguous()
+
+
 @triton.autotune(
     configs=matmul_autotune_configs(),
     key=["M", "N", "K"],
@@ -113,6 +128,44 @@ def _matmul_kernel(
     tl.store(c_ptrs, accumulator, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 
 
+def launch_triton_matmul(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor) -> None:
+    """
+    复用 Step 2 的高性能 GEMM kernel，把结果写入调用方提供的输出 tensor。
+
+    这个接口用于后续融合方案复用同一套 autotune / grouped ordering 骨架，
+    避免再维护一份低性能的“简化版 matmul”。
+    """
+    a, b = _validate_triton_matmul_inputs(a, b)
+    if out.ndim != 2:
+        raise ValueError("out 必须是二维矩阵。")
+    if out.shape != (a.shape[0], b.shape[1]):
+        raise ValueError(f"out 形状不匹配：out={tuple(out.shape)}, 期望={(a.shape[0], b.shape[1])}")
+    if not out.is_cuda:
+        raise ValueError("out 必须是 CUDA tensor。")
+    if out.dtype != a.dtype:
+        raise ValueError(f"out 的 dtype 必须与输入一致：out={out.dtype}, a={a.dtype}")
+
+    m, k = a.shape
+    _, n = b.shape
+    grid = lambda meta: (
+        triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(n, meta["BLOCK_SIZE_N"]),
+    )
+    _matmul_kernel[grid](
+        a,
+        b,
+        out,
+        m,
+        n,
+        k,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        out.stride(0),
+        out.stride(1),
+    )
+
+
 def triton_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
     Python wrapper：检查输入、分配输出、启动 Triton kernel。
@@ -124,39 +177,9 @@ def triton_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     返回：
         c: [M, N]，即 a @ b
     """
-    if a.ndim != 2 or b.ndim != 2:
-        raise ValueError("triton_matmul 只支持二维矩阵。")
-    if a.shape[1] != b.shape[0]:
-        raise ValueError(f"矩阵形状不匹配：a={tuple(a.shape)}, b={tuple(b.shape)}")
-    if not a.is_cuda or not b.is_cuda:
-        raise ValueError("triton_matmul 需要 CUDA tensor。")
-    if a.dtype != b.dtype:
-        raise ValueError(f"a 和 b 的 dtype 必须一致：a={a.dtype}, b={b.dtype}")
-    if a.dtype not in (torch.float16, torch.bfloat16, torch.float32):
-        raise ValueError(f"暂不支持 dtype={a.dtype}。")
-
-    # contiguous 能让 stride 规则更简单，便于学习和复现实验。
-    a = a.contiguous()
-    b = b.contiguous()
+    a, b = _validate_triton_matmul_inputs(a, b)
     m, k = a.shape
     _, n = b.shape
     c = torch.empty((m, n), device=a.device, dtype=a.dtype)
-
-    grid = lambda meta: (
-        triton.cdiv(m, meta["BLOCK_SIZE_M"]) * triton.cdiv(n, meta["BLOCK_SIZE_N"]),
-    )
-    _matmul_kernel[grid](
-        a,
-        b,
-        c,
-        m,
-        n,
-        k,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(1),
-        c.stride(0),
-        c.stride(1),
-    )
+    launch_triton_matmul(a, b, c)
     return c
