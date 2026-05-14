@@ -4,7 +4,7 @@
 
 1. Step 1：用 PyTorch 建立 baseline，测量 `X@A`、`Y@B`、`X@C` 和最终加法的总时间。
 2. Step 2：基于 Triton 官方 matmul 教程实现主干 GEMM，并与 PyTorch/cuBLAS 对比。
-3. Step 3：参考 `docs/Punica...md` 中记录的 Punica expand 思想，先做单 LoRA 场景的全流程验证：baseline 为 `X@C + (X@A)@B`，fused 路径为先算 `Y=X@A`，再在同一个 Triton kernel 中计算 `X@C + Y@B`，不加入 SGMV / 多 LoRA 逻辑。
+3. Step 3：当前新增一组“算子1 + 算子3”融合实验：融合阶段只输出 `Y=X@A` 与 `W=X@C`，后续仍单独执行 `Z=Y@B` 和 `O=W+Z`，并统一对比原版 PyTorch full 与 Triton 串行 full。
 
 ## 当前目录结构
 
@@ -19,6 +19,15 @@ src/triton_learning/
 └── kernels/
     ├── matmul.py               # Triton 教程风格主干 GEMM
     └── fused_matmul_expand.py  # 单 LoRA 融合 kernel
+
+src/fusion/
+├── common.py                   # 三个新方案共用的 benchmark 胶水逻辑
+├── scheme1_spatial_sharing.py  # 方案1：两个 Triton kernel + two streams
+├── scheme2_horizontal_fusion.py# 方案2：单 Triton kernel pid 分区
+├── scheme3_column_concat.py    # 方案3：列拼接 GEMM
+├── bench_scheme1_spatial_sharing.py
+├── bench_scheme2_horizontal_fusion.py
+└── bench_scheme3_column_concat.py
 ```
 
 ## 实现细节
@@ -48,13 +57,14 @@ src/triton_learning/
 
 ### Step 3
 
-- 本阶段先不做多 LoRA，也不做 segment / weight_indices / sorted_token_ids。
-- 只做单 adapter 版本，并且 benchmark 对齐 Step 1 的完整流程：
-  - baseline：`O = X @ C + (X @ A) @ B`
-  - fused：先算 `Y = X @ A`，再在同一个 Triton kernel 内计算 `O = X @ C + Y @ B`
-- `src/triton_learning/kernels/fused_matmul_expand.py` 的实现依据：
-  - `docs/fusion.md` 里“两个 reduction 维度不同，但输出 tile 相同，因此可以在同一 tile 上累加”的笔记
-  - `docs/Punica...md` 里对 Punica expand 加载 `Y` / `B` 并写回输出 tile 的记录
+- 旧版本 `src/triton_learning/kernels/fused_matmul_expand.py` 保留为“算子2 + 算子3”融合尝试。
+- 新版本实验放在 `src/fusion/`，目标只融合 `Y=X@A` 和 `W=X@C`，并分别保留三个方案的 benchmark。
+- 方案1：`scheme1_spatial_sharing.py` 使用两个 Triton kernel 分别计算 `Y` 和 `W`，Python 侧用 `torch.cuda.Stream` 近似观察并发执行效果。
+- 方案2：`scheme2_horizontal_fusion.py` 使用一个 Triton kernel，把 `pid < num_tiles_1` 分给 `Y` tile，其余 pid 计算 `W` tile。
+- 方案3：`scheme3_column_concat.py` 使用 `[X@A, X@C] = X@[A,C]`，当前保留 `physical_precat`、`logical_no_pad`、`logical_rpad=128`、`logical_c_first_no_pad` 四个口径。
+- 三个 benchmark 都额外记录两组 full baseline：
+  - 原版 `PyTorch/cuBLAS full`
+  - `Triton` 串行执行 `Y=X@A`、`W=X@C` 后再接后续算子的 full
 
 参考学习资料：
 - `docs/fusion.md`
@@ -62,35 +72,49 @@ src/triton_learning/
 
 ## 复现方法
 
-先进入虚拟环境并确认 Python 解释器：
+推荐的一条命令复现方式：
 
 ```bash
 cd /home/starrys/triton_learning
-source /home/starrys/venv/3DRF/bin/activate
-which python
-python -c "import sys; print(sys.executable)"
+bash scripts/reproduce_all_fusion_benchmarks.sh
 ```
 
-执行 Step 1：
+如果只想准备环境但暂时不跑 benchmark：
+
+```bash
+bash scripts/activate_local_venv.sh
+```
+
+单独执行 Step 1：
 
 ```bash
 bash scripts/run_step1_baseline.sh
 ```
 
-执行 Step 2：
+单独执行 Step 2：
 
 ```bash
 bash scripts/run_step2_triton_matmul.sh
 ```
 
-执行 Step 3：
+单独执行旧 Step 3：
 
 ```bash
 bash scripts/run_step3_fused_expand.sh
+```
+
+单独执行新的三个“算子1 + 算子3”融合 benchmark：
+
+```bash
+bash scripts/run_scheme1_spatial_sharing.sh
+bash scripts/run_scheme2_horizontal_fusion.sh
+bash scripts/run_scheme3_column_concat.sh
 ```
 
 如果需要自定义形状，可以在脚本前传环境变量，例如：
 
 ```bash
 M=64 H=4096 N=28672 R=8 DTYPE=fp16 WARMUP=30 REPEAT=100 bash scripts/run_step3_fused_expand.sh
+M=64 H=4096 N=28672 R=8 DTYPE=fp16 WARMUP=30 REPEAT=100 bash scripts/run_scheme2_horizontal_fusion.sh
+WARMUP=5 REPEAT=20 bash scripts/reproduce_all_fusion_benchmarks.sh
 ```

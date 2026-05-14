@@ -82,9 +82,21 @@ def measure_cuda_time(
 def append_csv(path: Path, row: dict[str, object]) -> None:
     """向 benchmark CSV 追加一行结果。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not path.exists()
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+    fieldnames = list(row.keys())
+    write_header = True
+    file_mode = "a"
+    if path.exists():
+        with path.open("r", newline="", encoding="utf-8") as f:
+            first_line = f.readline().strip()
+        existing_header = first_line.split(",") if first_line else []
+        if existing_header == fieldnames:
+            write_header = False
+        else:
+            # 当 benchmark schema 变化时，直接重写文件，避免新旧列错位。
+            file_mode = "w"
+
+    with path.open(file_mode, newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
         writer.writerow(row)

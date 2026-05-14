@@ -10,14 +10,15 @@
 
 set -euo pipefail
 
-cd /home/starrys/triton_learning
-source /home/starrys/venv/3DRF/bin/activate
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/activate_local_venv.sh"
 
 echo "当前 Python："
 which python
 python -c "import sys, torch; print(sys.executable); print('torch.cuda.is_available() =', torch.cuda.is_available())"
-
-export PYTHONPATH="/home/starrys/triton_learning/src:${PYTHONPATH:-}"
 
 python -m triton_learning.bench_step3_fused_expand \
   --m "${M:-64}" \
