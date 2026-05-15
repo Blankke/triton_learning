@@ -13,6 +13,8 @@ Benchmark 方案1：two-stream concurrent Triton kernels / 空分复用近似。
 
 from __future__ import annotations
 
+import argparse
+
 import torch
 
 from fusion.common import (
@@ -35,7 +37,24 @@ from fusion.scheme1_spatial_sharing import (
     main_tile_count,
     triton_spatial_sharing_down_main,
 )
-from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda, run_profiled_callable
+from triton_learning.benchmark_utils import (
+    append_csv,
+    cuda_nvtx_range,
+    measure_cuda_time,
+    require_cuda,
+    run_profiled_callable,
+)
+from triton_learning.kernels.matmul import launch_triton_matmul
+
+
+def _configure_parser(parser: argparse.ArgumentParser) -> None:
+    """补充 profiling 模式选择，让 baseline 与方案1本体复用同一个入口。"""
+    parser.add_argument(
+        "--profile-mode",
+        choices=("sequential", "concurrent"),
+        default="concurrent",
+        help="profiling 模式下选择 Triton 串行 baseline，或方案1的双 stream 并发版本。",
+    )
 
 
 def main() -> None:
@@ -43,6 +62,7 @@ def main() -> None:
     args = parse_common_args(
         "方案1：two-stream concurrent Triton kernels / 空分复用近似。",
         "outputs/benchmarks/fusion_scheme1_spatial_sharing.csv",
+        configure_parser=_configure_parser,
     )
     require_cuda()
 
@@ -55,12 +75,24 @@ def main() -> None:
     tiles_main = main_tile_count(shape.m, shape.n)
     print(f"  算子1 tile 数: {tiles_down}")
     print(f"  算子3 tile 数: {tiles_main}")
+    y_profile = torch.empty((shape.m, shape.r), device=inputs.x.device, dtype=inputs.x.dtype)
+    w_profile = torch.empty((shape.m, shape.n), device=inputs.x.device, dtype=inputs.x.dtype)
 
     def run_pytorch_pair_once() -> tuple[torch.Tensor, torch.Tensor]:
         return run_pytorch_pair(inputs)
 
     def run_sequential_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
+
+    def run_sequential_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
+        # baseline 现在也统一切到 Triton 串行 GEMM。
+        # 为了让 GUI 里同时看见“整体串行 pair”和里面的两个子算子，
+        # 这里手动拆成两个 NVTX 子区间。
+        with cuda_nvtx_range("baseline/op1_xa_triton"):
+            launch_triton_matmul(inputs.x, inputs.a, y_profile)
+        with cuda_nvtx_range("baseline/op3_xc_triton"):
+            launch_triton_matmul(inputs.x, inputs.c, w_profile)
+        return y_profile, w_profile
 
     def run_concurrent_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
@@ -77,13 +109,22 @@ def main() -> None:
         return compute_full_output(y_once, w_once, inputs.b)
 
     if args.profile_only:
-        print("\n方案1 profiling 模式：只执行方案1本体，不再混入 baseline 或 PyTorch workload。")
-        run_profiled_callable(
-            "scheme1/concurrent_pair",
-            run_concurrent_pair,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
+        if args.profile_mode == "sequential":
+            print("\n方案1 profiling 模式：执行 Triton 串行 baseline，只看 Y=X@A 与 W=X@C。")
+            run_profiled_callable(
+                "baseline/triton_serial_pair",
+                run_sequential_pair_profiled,
+                warmup=args.profile_warmup,
+                repeat=args.profile_repeat,
+            )
+        else:
+            print("\n方案1 profiling 模式：只执行方案1本体，不再混入 baseline 或 PyTorch workload。")
+            run_profiled_callable(
+                "scheme1/concurrent_pair",
+                run_concurrent_pair,
+                warmup=args.profile_warmup,
+                repeat=args.profile_repeat,
+            )
         print("方案1 profiling workload 执行完成。")
         return
 

@@ -114,45 +114,44 @@ bash scripts/run_scheme3_column_concat.sh
 如果要在 A100 上看老师关心的前两层证据（grid 级并行度、SM 级 occupancy），推荐直接使用仓库内置的 Nsight profiling 脚本。它们会调用 benchmark 的 `--profile-only` 模式，并自动打 NVTX 标记：
 
 ```bash
-bash scripts/profile_nsys.sh baseline
-bash scripts/profile_nsys.sh scheme1
-bash scripts/profile_nsys.sh scheme2
-VARIANT=physical_precat bash scripts/profile_nsys.sh scheme3
-
-bash scripts/profile_ncu.sh baseline
-bash scripts/profile_ncu.sh scheme1
-bash scripts/profile_ncu.sh scheme2
-VARIANT=physical_precat bash scripts/profile_ncu.sh scheme3
-
-bash scripts/profile_all.sh
+bash scripts/profile_suite.sh
+bash scripts/profile_suite.sh baseline
+bash scripts/profile_suite.sh scheme2
+TOOL=nsys bash scripts/profile_suite.sh
+TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
 ```
 
 说明：
 
-- `profile_nsys.sh` 与 `profile_ncu.sh` 现在都只生成“单一口径”的报告：
-  - `baseline`：只看原始串行中的 `X@A` 与 `X@C`
+- `profile_suite.sh` 是 profiling 的唯一入口：
+  - `baseline`：只看 Triton 串行 baseline 中的 `X@A` 与 `X@C`
   - `scheme1`：只看方案1的 concurrent pair
   - `scheme2`：只看方案2的 horizontal fused pair
   - `scheme3`：只看方案3某一个变体的 pair，默认 `physical_precat`
-- `profile_nsys.sh` 会生成 `.nsys-rep` 和对应的 `cuda_gpu_kern_sum / cuda_gpu_trace / cuda_api_sum` 文本。
-- `profile_ncu.sh` 会同时生成 `.ncu-rep` 和 CSV；默认抓取 grid size、block size、waves per SM、寄存器、shared memory、SM/DRAM 活跃度等关键指标。
-- `profile_all.sh` 是总入口，会一次跑完四份 `nsys` 和四份 `ncu` 报告；若只想跑其中一种，可传 `TOOL=nsys` 或 `TOOL=ncu`。
+- `TOOL=all` 时会同时跑 `nsys` 和 `ncu`；也可以切成 `TOOL=nsys` 或 `TOOL=ncu`。
+- `profile_suite.sh` 跑 `nsys` 时会生成 `.nsys-rep` 和对应的 `cuda_gpu_kern_sum / cuda_gpu_trace / cuda_api_sum` 文本。
+- `profile_suite.sh` 跑 `ncu` 时会同时生成 `.ncu-rep` 和 CSV；默认抓取 grid size、block size、waves per SM、寄存器、shared memory、SM/DRAM 活跃度等关键指标。
+- `nsys` 默认使用 `NSYS_PROFILE_WARMUP=1`、`NSYS_PROFILE_REPEAT=20`，这样在 GUI 里更容易直接看见稳定阶段的 `SM Active`、kernel timeline 和两个子算子的边界。
+- `baseline` 的 Triton 串行报告会额外打出两个子区间：
+  - `baseline/op1_xa_triton`
+  - `baseline/op3_xc_triton`
+  这样既能看整个串行 pair，也能单独观察 `X@A` 和 `X@C`。
 - 如果想改成完整采集，可加 `NCU_SET=full`：
 
 ```bash
-NCU_SET=full bash scripts/profile_ncu.sh scheme2
+NCU_SET=full TOOL=ncu bash scripts/profile_suite.sh scheme2
 ```
 
 - 所有 profiling 脚本都支持：
 
 ```bash
-M=64 H=4096 N=28672 R=8 DTYPE=fp16 PROFILE_WARMUP=1 PROFILE_REPEAT=1 bash scripts/profile_nsys.sh scheme2
+M=64 H=4096 N=28672 R=8 DTYPE=fp16 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
 ```
 
 - 如果想一条命令把四份 `nsys` / `ncu` 全部跑完：
 
 ```bash
-VARIANT=physical_precat TOOL=all PROFILE_WARMUP=1 PROFILE_REPEAT=1 bash scripts/profile_all.sh
+VARIANT=physical_precat TOOL=all NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 NCU_PROFILE_WARMUP=1 NCU_PROFILE_REPEAT=1 bash scripts/profile_suite.sh
 ```
 
 如果需要自定义形状，可以在脚本前传环境变量，例如：

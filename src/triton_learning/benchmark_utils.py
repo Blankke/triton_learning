@@ -22,6 +22,8 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
+STEADY_STATE_CAPTURE_RANGE = "steady_state_capture"
+
 
 @dataclass(frozen=True)
 class TimingResult:
@@ -80,10 +82,13 @@ def run_profiled_callable(
             fn()
         torch.cuda.synchronize()
 
-        for _ in tqdm(range(repeat), desc=f"{title} profile", leave=False):
-            with cuda_nvtx_range(title):
-                fn()
-            torch.cuda.synchronize()
+        # 外层 steady_state range 专门给 Nsight Systems 做 capture-range 过滤，
+        # 这样最终报告里不会再混入 warmup / autotune 阶段的时间线。
+        with cuda_nvtx_range(STEADY_STATE_CAPTURE_RANGE):
+            for _ in tqdm(range(repeat), desc=f"{title} profile", leave=False):
+                with cuda_nvtx_range(title):
+                    fn()
+                torch.cuda.synchronize()
 
 
 def measure_cuda_time(
