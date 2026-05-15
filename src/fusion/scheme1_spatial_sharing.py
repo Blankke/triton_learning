@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import triton
 
@@ -24,6 +26,20 @@ REFERENCE_BLOCK_M_DOWN = 16
 REFERENCE_BLOCK_N_DOWN = 16
 REFERENCE_BLOCK_M_MAIN = 16
 REFERENCE_BLOCK_N_MAIN = 128
+
+
+@dataclass(frozen=True)
+class _StreamPair:
+    """按 device 复用的双 stream 句柄。"""
+
+    down_stream: torch.cuda.Stream
+    main_stream: torch.cuda.Stream
+
+
+# 方案1的重点是比较“两个 Triton GEMM 并发 launch”本身是否有收益。
+# 如果每次调用都新建 stream，会把 stream 创建成本混进 benchmark 热路径，
+# 让测量结果偏向悲观。因此这里按 device 缓存并复用 stream。
+_STREAM_CACHE: dict[int, _StreamPair] = {}
 
 
 def down_tile_count(m: int, r: int) -> int:
@@ -47,6 +63,27 @@ def _check_inputs(x: torch.Tensor, a: torch.Tensor, c: torch.Tensor) -> tuple[to
     if len({x.dtype, a.dtype, c.dtype}) != 1:
         raise ValueError("x、a、c 的 dtype 必须一致。")
     return x.contiguous(), a.contiguous(), c.contiguous()
+
+
+def _device_index(device: torch.device) -> int:
+    """把 torch.device 归一化为可缓存的 CUDA device index。"""
+    if device.type != "cuda":
+        raise ValueError("方案1只支持 CUDA device。")
+    return torch.cuda.current_device() if device.index is None else device.index
+
+
+def _get_stream_pair(device: torch.device) -> _StreamPair:
+    """按 device 复用双 stream，避免每次调用都重复创建。"""
+    device_index = _device_index(device)
+    cached = _STREAM_CACHE.get(device_index)
+    if cached is not None:
+        return cached
+    stream_pair = _StreamPair(
+        down_stream=torch.cuda.Stream(device=device_index),
+        main_stream=torch.cuda.Stream(device=device_index),
+    )
+    _STREAM_CACHE[device_index] = stream_pair
+    return stream_pair
 
 
 def triton_spatial_sharing_down_main(
@@ -74,8 +111,9 @@ def triton_spatial_sharing_down_main(
         return y, w
 
     current = torch.cuda.current_stream()
-    down_stream = torch.cuda.Stream(device=x.device)
-    main_stream = torch.cuda.Stream(device=x.device)
+    stream_pair = _get_stream_pair(x.device)
+    down_stream = stream_pair.down_stream
+    main_stream = stream_pair.main_stream
     down_stream.wait_stream(current)
     main_stream.wait_stream(current)
 
