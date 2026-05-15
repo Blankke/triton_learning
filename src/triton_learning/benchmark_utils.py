@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import statistics
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +43,52 @@ def require_cuda() -> None:
         raise RuntimeError("PyTorch 当前看不到 CUDA GPU，请先修复环境。")
 
 
+@contextmanager
+def cuda_nvtx_range(title: str):
+    """
+    为 Nsight Systems / Nsight Compute 加一层可读的 NVTX 标记。
+
+    这样在远端 A100 上做 profiling 时，可以直接按 range 名字定位：
+        op1_XA / scheme2_horizontal_pair / scheme3_physical_precat_pair
+    """
+    if torch.cuda.is_available():
+        torch.cuda.nvtx.range_push(title)
+        try:
+            yield
+        finally:
+            torch.cuda.nvtx.range_pop()
+    else:
+        yield
+
+
+def run_profiled_callable(
+    title: str,
+    fn: Callable[[], torch.Tensor | tuple[torch.Tensor, ...]],
+    *,
+    warmup: int,
+    repeat: int,
+) -> None:
+    """
+    只执行少量带 NVTX 的 workload，不做 benchmark 统计。
+
+    这个入口专门给 nsys / ncu 使用：
+        1. warmup 阶段先把 Triton kernel 编译好；
+        2. repeat 阶段再用 NVTX 包住真正想观察的 kernel。
+    """
+    with torch.no_grad():
+        for _ in tqdm(range(warmup), desc=f"{title} profile warmup", leave=False):
+            fn()
+        torch.cuda.synchronize()
+
+        for _ in tqdm(range(repeat), desc=f"{title} profile", leave=False):
+            with cuda_nvtx_range(title):
+                fn()
+            torch.cuda.synchronize()
+
+
 def measure_cuda_time(
     title: str,
-    fn: Callable[[], torch.Tensor],
+    fn: Callable[[], torch.Tensor | tuple[torch.Tensor, ...]],
     warmup: int,
     repeat: int,
 ) -> TimingResult:

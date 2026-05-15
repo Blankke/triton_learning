@@ -20,7 +20,7 @@ from pathlib import Path
 
 import torch
 
-from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda
+from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda, run_profiled_callable
 from triton_learning.problem_spec import DEFAULT_GATEUP_PROBLEM, ProblemShape, resolve_dtype
 from triton_learning.reference_ops import (
     compute_lora_down,
@@ -46,6 +46,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--warmup", type=int, default=30, help="正式计时前的预热次数。")
     parser.add_argument("--repeat", type=int, default=100, help="正式计时重复次数。")
+    parser.add_argument(
+        "--profile-only",
+        action="store_true",
+        help="进入 profiling 模式：不写 CSV，不做统计，只执行少量带 NVTX 标记的 workload。",
+    )
+    parser.add_argument("--profile-warmup", type=int, default=1, help="profiling 模式下的预热次数。")
+    parser.add_argument("--profile-repeat", type=int, default=1, help="profiling 模式下实际执行次数。")
     parser.add_argument(
         "--output",
         type=Path,
@@ -90,6 +97,41 @@ def main() -> None:
 
     def run_full_once() -> torch.Tensor:
         return run_reference_pipeline(tensors.x, tensors.a, tensors.b, tensors.c)
+
+    if args.profile_only:
+        print("\nStep 1 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        run_profiled_callable(
+            "step1/op1_xa",
+            run_op1_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "step1/op2_yb",
+            run_op2_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "step1/op3_xc",
+            run_op3_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "step1/add",
+            run_add_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "step1/full_pipeline",
+            run_full_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        print("Step 1 profiling workload 执行完成。")
+        return
 
     op1 = measure_cuda_time("op1: Y = X @ A", run_op1_once, args.warmup, args.repeat)
     op2 = measure_cuda_time("op2: Z = Y @ B", run_op2_once, args.warmup, args.repeat)

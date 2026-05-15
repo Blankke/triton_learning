@@ -35,7 +35,7 @@ from fusion.scheme1_spatial_sharing import (
     main_tile_count,
     triton_spatial_sharing_down_main,
 )
-from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda
+from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda, run_profiled_callable
 
 
 def main() -> None:
@@ -82,6 +82,47 @@ def main() -> None:
     def run_concurrent_full() -> torch.Tensor:
         y_once, w_once = triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
         return compute_full_output(y_once, w_once, inputs.b)
+
+    if args.profile_only:
+        print("\n方案1 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        run_profiled_callable(
+            "scheme1/pytorch_pair",
+            run_pytorch_pair_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme1/triton_serial_pair",
+            run_sequential_pair,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme1/triton_concurrent_pair",
+            run_concurrent_pair,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme1/pytorch_full",
+            run_pytorch_full,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme1/triton_serial_full",
+            run_sequential_full,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme1/triton_concurrent_full",
+            run_concurrent_full,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        print("方案1 profiling workload 执行完成。")
+        return
 
     pytorch_full = measure_cuda_time("scheme1 pytorch full", run_pytorch_full, args.warmup, args.repeat)
     pytorch_pair = measure_cuda_time("scheme1 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)

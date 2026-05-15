@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -59,7 +60,11 @@ class ErrorReport:
         return self.y_correct and self.w_correct and self.o_correct
 
 
-def parse_common_args(description: str, default_output: str) -> argparse.Namespace:
+def parse_common_args(
+    description: str,
+    default_output: str,
+    configure_parser: Callable[[argparse.ArgumentParser], None] | None = None,
+) -> argparse.Namespace:
     """解析三个 benchmark 共用的命令行参数。"""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--m", type=int, default=DEFAULT_GATEUP_PROBLEM.m, help="输入 token/batch 维度 M。")
@@ -74,8 +79,17 @@ def parse_common_args(description: str, default_output: str) -> argparse.Namespa
     )
     parser.add_argument("--warmup", type=int, default=30, help="正式计时前的预热次数。")
     parser.add_argument("--repeat", type=int, default=100, help="正式计时重复次数。")
+    parser.add_argument(
+        "--profile-only",
+        action="store_true",
+        help="进入 profiling 模式：不写 CSV，不做统计，只执行少量带 NVTX 标记的 workload。",
+    )
+    parser.add_argument("--profile-warmup", type=int, default=1, help="profiling 模式下的预热次数。")
+    parser.add_argument("--profile-repeat", type=int, default=1, help="profiling 模式下实际执行次数。")
     parser.add_argument("--seed", type=int, default=0, help="随机种子。")
     parser.add_argument("--output", type=Path, default=Path(default_output), help="CSV 结果输出路径。")
+    if configure_parser is not None:
+        configure_parser(parser)
     return parser.parse_args()
 
 

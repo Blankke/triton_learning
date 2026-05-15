@@ -14,6 +14,7 @@ Benchmark 方案3：column-concatenated GEMM / 列拼接融合。
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable
 
 import torch
@@ -40,7 +41,23 @@ from fusion.scheme3_column_concat import (
     triton_logical_concat_down_main,
     triton_physical_concat_precat,
 )
-from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda
+from triton_learning.benchmark_utils import append_csv, measure_cuda_time, require_cuda, run_profiled_callable
+
+
+def _configure_parser(parser: argparse.ArgumentParser) -> None:
+    """给方案3补充变体过滤参数，便于单独做 profiling。"""
+    parser.add_argument(
+        "--variant",
+        choices=(
+            "all",
+            "physical_precat",
+            "logical_no_pad",
+            "logical_rpad_128",
+            "logical_c_first_no_pad",
+        ),
+        default="all",
+        help="选择方案3中要执行的变体；profiling 时建议一次只抓一个变体。",
+    )
 
 
 def main() -> None:
@@ -48,6 +65,7 @@ def main() -> None:
     args = parse_common_args(
         "方案3：column-concatenated GEMM / 列拼接融合。",
         "outputs/benchmarks/fusion_scheme3_column_concat.csv",
+        configure_parser=_configure_parser,
     )
     require_cuda()
 
@@ -78,11 +96,6 @@ def main() -> None:
         y_once, w_once = triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
         return compute_full_output(y_once, w_once, inputs.b)
 
-    pytorch_full = measure_cuda_time("scheme3 pytorch full", run_pytorch_full, args.warmup, args.repeat)
-    pytorch_pair = measure_cuda_time("scheme3 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)
-    baseline_pair = measure_cuda_time("scheme3 baseline Y/W", run_baseline_pair, args.warmup, args.repeat)
-    baseline_full = measure_cuda_time("scheme3 baseline full", run_baseline_full, args.warmup, args.repeat)
-
     variants: list[tuple[str, int, Callable[[], tuple[torch.Tensor, torch.Tensor]]]] = [
         (
             "physical_precat",
@@ -105,6 +118,65 @@ def main() -> None:
             lambda: triton_logical_concat_c_first_down_main(inputs.x, inputs.a, inputs.c),
         ),
     ]
+
+    if args.variant != "all":
+        variants = [variant for variant in variants if variant[0] == args.variant]
+        if not variants:
+            raise ValueError(f"未找到方案3变体：{args.variant}")
+
+    if args.profile_only:
+        print("\n方案3 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        run_profiled_callable(
+            "scheme3/pytorch_pair",
+            run_pytorch_pair_once,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme3/triton_serial_pair",
+            run_baseline_pair,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        for variant_name, _, run_variant_pair in variants:
+            run_profiled_callable(
+                f"scheme3/{variant_name}/pair",
+                run_variant_pair,
+                warmup=args.profile_warmup,
+                repeat=args.profile_repeat,
+            )
+        run_profiled_callable(
+            "scheme3/pytorch_full",
+            run_pytorch_full,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        run_profiled_callable(
+            "scheme3/triton_serial_full",
+            run_baseline_full,
+            warmup=args.profile_warmup,
+            repeat=args.profile_repeat,
+        )
+        for variant_name, _, run_variant_pair in variants:
+            def run_variant_full_profile(
+                run_variant_pair: Callable[[], tuple[torch.Tensor, torch.Tensor]] = run_variant_pair,
+            ) -> torch.Tensor:
+                y_once, w_once = run_variant_pair()
+                return compute_full_output(y_once, w_once, inputs.b)
+
+            run_profiled_callable(
+                f"scheme3/{variant_name}/full",
+                run_variant_full_profile,
+                warmup=args.profile_warmup,
+                repeat=args.profile_repeat,
+            )
+        print("方案3 profiling workload 执行完成。")
+        return
+
+    pytorch_full = measure_cuda_time("scheme3 pytorch full", run_pytorch_full, args.warmup, args.repeat)
+    pytorch_pair = measure_cuda_time("scheme3 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)
+    baseline_pair = measure_cuda_time("scheme3 baseline Y/W", run_baseline_pair, args.warmup, args.repeat)
+    baseline_full = measure_cuda_time("scheme3 baseline full", run_baseline_full, args.warmup, args.repeat)
 
     print("\n方案3 baseline：")
     print(f"  PyTorch full: {pytorch_full.median_ms:.6f} ms")
