@@ -10,6 +10,14 @@ Benchmark 方案3：column-concatenated GEMM / 列拼接融合。
         2. logical_no_pad：Triton 内逻辑拼接，C 紧跟 r 后面
         3. logical_rpad_128：Triton 内逻辑拼接，C 从 128 列对齐边界开始
         4. logical_c_first_no_pad：Triton 内逻辑拼接，按 [C, A] 排列，尾 tile mask A 的剩余列
+
+Nsight Systems 对照关系：
+    - profiling 模式下只执行某一个方案3变体的 pair。
+    - `scheme3/physical_precat/pair` 看到的主 kernel 仍然是 `_matmul_kernel`。
+      这是正常现象，因为 physical_precat 本质上就是把 [A, C] 预拼接后，
+      直接复用 Step 2 的高性能 Triton GEMM 做一次更宽的矩阵乘。
+    - `vectorized_elementwise_kernel<...FillFunctor<int>...>` 多数是 Triton autotune /
+      运行时辅助产生的 fill/reset 内核，不是题目里的核心 GEMM 本体。
 """
 
 from __future__ import annotations
@@ -72,7 +80,6 @@ def main() -> None:
     shape = shape_from_args(args)
     dtype = dtype_from_args(args)
     inputs = create_inputs(shape, dtype, torch.device("cuda"), args.seed)
-    refs = compute_references(inputs)
     ac = torch.cat([inputs.a, inputs.c], dim=1).contiguous()
 
     print_shape("方案3矩阵形状：", shape)
@@ -125,53 +132,20 @@ def main() -> None:
             raise ValueError(f"未找到方案3变体：{args.variant}")
 
     if args.profile_only:
-        print("\n方案3 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        print("\n方案3 profiling 模式：只执行方案3本体，不再混入 baseline 或 PyTorch workload。")
+        if len(variants) != 1:
+            raise ValueError("方案3 profiling 模式要求只选择一个变体，请通过 --variant 指定。")
+        variant_name, _, run_variant_pair = variants[0]
         run_profiled_callable(
-            "scheme3/pytorch_pair",
-            run_pytorch_pair_once,
+            f"scheme3/{variant_name}/pair",
+            run_variant_pair,
             warmup=args.profile_warmup,
             repeat=args.profile_repeat,
         )
-        run_profiled_callable(
-            "scheme3/triton_serial_pair",
-            run_baseline_pair,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        for variant_name, _, run_variant_pair in variants:
-            run_profiled_callable(
-                f"scheme3/{variant_name}/pair",
-                run_variant_pair,
-                warmup=args.profile_warmup,
-                repeat=args.profile_repeat,
-            )
-        run_profiled_callable(
-            "scheme3/pytorch_full",
-            run_pytorch_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme3/triton_serial_full",
-            run_baseline_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        for variant_name, _, run_variant_pair in variants:
-            def run_variant_full_profile(
-                run_variant_pair: Callable[[], tuple[torch.Tensor, torch.Tensor]] = run_variant_pair,
-            ) -> torch.Tensor:
-                y_once, w_once = run_variant_pair()
-                return compute_full_output(y_once, w_once, inputs.b)
-
-            run_profiled_callable(
-                f"scheme3/{variant_name}/full",
-                run_variant_full_profile,
-                warmup=args.profile_warmup,
-                repeat=args.profile_repeat,
-            )
         print("方案3 profiling workload 执行完成。")
         return
+
+    refs = compute_references(inputs)
 
     pytorch_full = measure_cuda_time("scheme3 pytorch full", run_pytorch_full, args.warmup, args.repeat)
     pytorch_pair = measure_cuda_time("scheme3 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)

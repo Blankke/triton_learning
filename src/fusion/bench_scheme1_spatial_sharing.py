@@ -49,19 +49,12 @@ def main() -> None:
     shape = shape_from_args(args)
     dtype = dtype_from_args(args)
     inputs = create_inputs(shape, dtype, torch.device("cuda"), args.seed)
-    refs = compute_references(inputs)
 
     print_shape("方案1矩阵形状：", shape)
     tiles_down = down_tile_count(shape.m, shape.r)
     tiles_main = main_tile_count(shape.m, shape.n)
     print(f"  算子1 tile 数: {tiles_down}")
     print(f"  算子3 tile 数: {tiles_main}")
-
-    with torch.no_grad():
-        y, w = triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
-        o = compute_full_output(y, w, inputs.b)
-        torch.cuda.synchronize()
-        errors = check_outputs(y, w, o, refs, dtype)
 
     def run_pytorch_pair_once() -> tuple[torch.Tensor, torch.Tensor]:
         return run_pytorch_pair(inputs)
@@ -84,45 +77,22 @@ def main() -> None:
         return compute_full_output(y_once, w_once, inputs.b)
 
     if args.profile_only:
-        print("\n方案1 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        print("\n方案1 profiling 模式：只执行方案1本体，不再混入 baseline 或 PyTorch workload。")
         run_profiled_callable(
-            "scheme1/pytorch_pair",
-            run_pytorch_pair_once,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme1/triton_serial_pair",
-            run_sequential_pair,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme1/triton_concurrent_pair",
+            "scheme1/concurrent_pair",
             run_concurrent_pair,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme1/pytorch_full",
-            run_pytorch_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme1/triton_serial_full",
-            run_sequential_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme1/triton_concurrent_full",
-            run_concurrent_full,
             warmup=args.profile_warmup,
             repeat=args.profile_repeat,
         )
         print("方案1 profiling workload 执行完成。")
         return
+
+    refs = compute_references(inputs)
+    with torch.no_grad():
+        y, w = triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
+        o = compute_full_output(y, w, inputs.b)
+        torch.cuda.synchronize()
+        errors = check_outputs(y, w, o, refs, dtype)
 
     pytorch_full = measure_cuda_time("scheme1 pytorch full", run_pytorch_full, args.warmup, args.repeat)
     pytorch_pair = measure_cuda_time("scheme1 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)

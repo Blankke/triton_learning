@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # 用法：
 #   cd /home/starrys/triton_learning
-#   bash scripts/profile_ncu.sh step1
+#   bash scripts/profile_ncu.sh baseline
+#   bash scripts/profile_ncu.sh scheme1
 #   bash scripts/profile_ncu.sh scheme2
 #   VARIANT=physical_precat bash scripts/profile_ncu.sh scheme3
 #   NCU_SET=full bash scripts/profile_ncu.sh scheme2
 #
 # 说明：
-#   用 benchmark 自带的 --profile-only 模式采集 Nsight Compute 指标。
-#   默认只抓老师当前关心的三层分析相关指标：
-#     - launch__grid_size
-#     - launch__block_size
-#     - launch__waves_per_multiprocessor
-#     - registers/shared memory
-#     - sm/dram 活跃度
-#   若想切到完整采集，可设置环境变量 NCU_SET=full。
+#   每次只采一份“单一口径”的 Nsight Compute 报告，避免把 baseline 和方案本体混在同一份 CSV 里。
+#   四类报告分别是：
+#     - baseline：只看原始串行里的 `X@A` 与 `X@C`
+#     - scheme1：只看方案1的 two-stream concurrent pair
+#     - scheme2：只看方案2的 horizontal fused pair
+#     - scheme3：只看方案3某一个变体的 pair（默认 physical_precat）
+#   默认只抓老师当前关心的三层分析相关指标；若想切到完整采集，可设置环境变量 NCU_SET=full。
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ cd "$ROOT_DIR"
 
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-  echo "用法：bash scripts/profile_ncu.sh <step1|scheme1|scheme2|scheme3>"
+  echo "用法：bash scripts/profile_ncu.sh <baseline|scheme1|scheme2|scheme3>"
   exit 1
 fi
 
@@ -33,25 +33,27 @@ source "$ROOT_DIR/scripts/activate_local_venv.sh"
 mkdir -p "$ROOT_DIR/outputs/ncu"
 
 MODULE=""
-REPORT_TAG="$TARGET"
+REPORT_TAG=""
 EXTRA_ARGS=()
 
 case "$TARGET" in
-  step1)
+  baseline)
     MODULE="triton_learning.bench_step1_baseline"
+    REPORT_TAG="baseline_serial_yw"
     ;;
   scheme1)
     MODULE="fusion.bench_scheme1_spatial_sharing"
+    REPORT_TAG="scheme1_concurrent_pair"
     ;;
   scheme2)
     MODULE="fusion.bench_scheme2_horizontal_fusion"
+    REPORT_TAG="scheme2_horizontal_pair"
     ;;
   scheme3)
     MODULE="fusion.bench_scheme3_column_concat"
-    if [[ -n "${VARIANT:-}" ]]; then
-      EXTRA_ARGS+=(--variant "$VARIANT")
-      REPORT_TAG="${REPORT_TAG}_${VARIANT}"
-    fi
+    VARIANT_NAME="${VARIANT:-physical_precat}"
+    EXTRA_ARGS+=(--variant "$VARIANT_NAME")
+    REPORT_TAG="scheme3_${VARIANT_NAME}_pair"
     ;;
   *)
     echo "不支持的 target: $TARGET"

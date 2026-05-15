@@ -7,6 +7,14 @@ Benchmark 方案2：single-kernel horizontal fusion via pid partition。
 说明：
     baseline 使用方案1的 sequential two Triton kernels。
     方案2使用一个 Triton kernel，通过 pid 区间把 4 个 Y tile 和 896 个 W tile 放在同一个 launch 中。
+
+Nsight Systems 对照关系：
+    - benchmark 正常计时时，baseline 路径仍然会看到 `_matmul_kernel`，
+      因为它本质上还是两个独立 Triton GEMM。
+    - profiling 模式下只执行 `scheme2/horizontal_pair`，因此报告中真正需要关注的是
+      `_horizontal_fused_kernel`。
+    - `vectorized_elementwise_kernel<...FillFunctor<int>...>`
+      多数是 Triton autotune / 运行时辅助产生的 fill/reset 内核，不是题目里的核心 GEMM 本体。
 """
 
 from __future__ import annotations
@@ -48,7 +56,6 @@ def main() -> None:
     shape = shape_from_args(args)
     dtype = dtype_from_args(args)
     inputs = create_inputs(shape, dtype, torch.device("cuda"), args.seed)
-    refs = compute_references(inputs)
 
     print_shape("方案2矩阵形状：", shape)
     tiles_down = down_tile_count(shape.m, shape.r)
@@ -58,12 +65,6 @@ def main() -> None:
     print(f"  算子3 tile 数: {tiles_main}")
     print(f"  total grid: {total_tiles}")
 
-    with torch.no_grad():
-        y, w = triton_horizontal_fused_down_main(inputs.x, inputs.a, inputs.c)
-        o = compute_full_output(y, w, inputs.b)
-        torch.cuda.synchronize()
-        errors = check_outputs(y, w, o, refs, dtype)
-
     def run_pytorch_full() -> torch.Tensor:
         return run_pytorch_full_pipeline(inputs)
 
@@ -71,9 +72,14 @@ def main() -> None:
         return run_pytorch_pair(inputs)
 
     def run_baseline_pair() -> tuple[torch.Tensor, torch.Tensor]:
+        # Nsight Systems 中这里对应的主 kernel 名字是 `_matmul_kernel`。
+        # 因为它本质上还是 Step 2 的两个独立 Triton GEMM：先算 Y=X@A，再算 W=X@C。
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
 
     def run_fused_pair() -> tuple[torch.Tensor, torch.Tensor]:
+        # Nsight Systems 中这里对应 `_horizontal_fused_kernel`。
+        # 这是方案2真正的单 kernel 横向融合路径：一个 launch 同时覆盖 Y 的 4 个 tile
+        # 和 W 的 896 个 tile。
         return triton_horizontal_fused_down_main(inputs.x, inputs.a, inputs.c)
 
     def run_baseline_full() -> torch.Tensor:
@@ -85,45 +91,22 @@ def main() -> None:
         return compute_full_output(y_once, w_once, inputs.b)
 
     if args.profile_only:
-        print("\n方案2 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
-        run_profiled_callable(
-            "scheme2/pytorch_pair",
-            run_pytorch_pair_once,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme2/triton_serial_pair",
-            run_baseline_pair,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
+        print("\n方案2 profiling 模式：只执行方案2本体，不再混入 baseline 或 PyTorch workload。")
         run_profiled_callable(
             "scheme2/horizontal_pair",
             run_fused_pair,
             warmup=args.profile_warmup,
             repeat=args.profile_repeat,
         )
-        run_profiled_callable(
-            "scheme2/pytorch_full",
-            run_pytorch_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme2/triton_serial_full",
-            run_baseline_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "scheme2/horizontal_full",
-            run_fused_full,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
         print("方案2 profiling workload 执行完成。")
         return
+
+    refs = compute_references(inputs)
+    with torch.no_grad():
+        y, w = triton_horizontal_fused_down_main(inputs.x, inputs.a, inputs.c)
+        o = compute_full_output(y, w, inputs.b)
+        torch.cuda.synchronize()
+        errors = check_outputs(y, w, o, refs, dtype)
 
     pytorch_full = measure_cuda_time("scheme2 pytorch full", run_pytorch_full, args.warmup, args.repeat)
     pytorch_pair = measure_cuda_time("scheme2 pytorch Y/W", run_pytorch_pair_once, args.warmup, args.repeat)

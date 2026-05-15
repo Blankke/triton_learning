@@ -99,7 +99,7 @@ def main() -> None:
         return run_reference_pipeline(tensors.x, tensors.a, tensors.b, tensors.c)
 
     if args.profile_only:
-        print("\nStep 1 profiling 模式：不写 CSV，只执行 NVTX 标记的 workload。")
+        print("\nStep 1 profiling 模式：只执行 baseline 中与 Y/W 对比直接相关的串行算子。")
         run_profiled_callable(
             "step1/op1_xa",
             run_op1_once,
@@ -107,26 +107,8 @@ def main() -> None:
             repeat=args.profile_repeat,
         )
         run_profiled_callable(
-            "step1/op2_yb",
-            run_op2_once,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
             "step1/op3_xc",
             run_op3_once,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "step1/add",
-            run_add_once,
-            warmup=args.profile_warmup,
-            repeat=args.profile_repeat,
-        )
-        run_profiled_callable(
-            "step1/full_pipeline",
-            run_full_once,
             warmup=args.profile_warmup,
             repeat=args.profile_repeat,
         )
