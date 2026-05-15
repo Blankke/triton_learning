@@ -62,9 +62,10 @@ case "$TARGET" in
 esac
 
 REPORT_FILE="$ROOT_DIR/outputs/ncu/${REPORT_TAG}.csv"
+REPORT_BASE="$ROOT_DIR/outputs/ncu/${REPORT_TAG}"
 DEFAULT_METRICS="launch__grid_size,launch__block_size,launch__registers_per_thread,launch__shared_mem_per_block_static,launch__shared_mem_per_block_dynamic,launch__waves_per_multiprocessor,sm__warps_active.avg.pct_of_peak_sustained_active,sm__throughput.avg.pct_of_peak_sustained_elapsed,dram__throughput.avg.pct_of_peak_sustained_elapsed"
 
-NCU_ARGS=(--target-processes all --csv --log-file "$REPORT_FILE")
+NCU_ARGS=(--target-processes all --force-overwrite --export "$REPORT_BASE" --csv --log-file "$REPORT_FILE")
 if [[ -n "${NCU_SET:-}" ]]; then
   NCU_ARGS+=(--set "$NCU_SET")
 else
@@ -75,6 +76,7 @@ echo "当前 Python："
 which python
 python -c "import sys, torch; print(sys.executable); print('torch.cuda.is_available() =', torch.cuda.is_available())"
 echo "开始采集 Nsight Compute: $REPORT_FILE"
+echo "同时导出 Nsight Compute report: ${REPORT_BASE}.ncu-rep"
 
 ncu \
   "${NCU_ARGS[@]}" \
@@ -91,3 +93,4 @@ ncu \
 
 echo "Nsight Compute 结果已写入："
 echo "  $REPORT_FILE"
+echo "  ${REPORT_BASE}.ncu-rep"

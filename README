@@ -135,7 +135,7 @@ bash scripts/profile_all.sh
   - `scheme2`：只看方案2的 horizontal fused pair
   - `scheme3`：只看方案3某一个变体的 pair，默认 `physical_precat`
 - `profile_nsys.sh` 会生成 `.nsys-rep` 和对应的 `cuda_gpu_kern_sum / cuda_gpu_trace / cuda_api_sum` 文本。
-- `profile_ncu.sh` 默认抓取 grid size、block size、waves per SM、寄存器、shared memory、SM/DRAM 活跃度等关键指标。
+- `profile_ncu.sh` 会同时生成 `.ncu-rep` 和 CSV；默认抓取 grid size、block size、waves per SM、寄存器、shared memory、SM/DRAM 活跃度等关键指标。
 - `profile_all.sh` 是总入口，会一次跑完四份 `nsys` 和四份 `ncu` 报告；若只想跑其中一种，可传 `TOOL=nsys` 或 `TOOL=ncu`。
 - 如果想改成完整采集，可加 `NCU_SET=full`：
 
