@@ -23,7 +23,7 @@ src/triton_learning/
 src/fusion/
 ├── common.py                   # 三个新方案共用的 benchmark 胶水逻辑
 ├── scheme1_spatial_sharing.py  # 方案1：两个 Triton kernel + two streams
-├── scheme2_horizontal_fusion.py# 方案2：单 Triton kernel pid 分区
+├── scheme2_horizontal_fusion.py# 方案2：保留 static_pid 与 grouped_persistent 两个单 kernel 口径
 ├── scheme3_column_concat.py    # 方案3：列拼接 GEMM
 ├── bench_scheme1_spatial_sharing.py
 ├── bench_scheme2_horizontal_fusion.py
@@ -60,7 +60,9 @@ src/fusion/
 - 旧版本 `src/triton_learning/kernels/fused_matmul_expand.py` 保留为“算子2 + 算子3”融合尝试。
 - 新版本实验放在 `src/fusion/`，目标只融合 `Y=X@A` 和 `W=X@C`，并分别保留三个方案的 benchmark。
 - 方案1：`scheme1_spatial_sharing.py` 使用两个 Triton kernel 分别计算 `Y` 和 `W`，Python 侧用 `torch.cuda.Stream` 近似观察并发执行效果。
-- 方案2：`scheme2_horizontal_fusion.py` 使用一个 Triton kernel，把 `pid < num_tiles_1` 分给 `Y` tile，其余 pid 计算 `W` tile。
+- 方案2：`scheme2_horizontal_fusion.py` 当前同时保留两个单 kernel 口径：
+  - `static_pid`：把 `pid < num_tiles_1` 分给 `Y` tile，其余 pid 计算 `W` tile
+  - `grouped_persistent`：前若干 worker 先做 `Y=X@A`，完成后回流到自己预留的 main chunk 条带，继续处理 `W=X@C`
 - 方案3：`scheme3_column_concat.py` 使用 `[X@A, X@C] = X@[A,C]`，当前保留 `physical_precat`、`logical_no_pad`、`logical_rpad=128`、`logical_c_first_no_pad` 四个口径。
 - 三个 benchmark 都额外记录两组 full baseline：
   - 原版 `PyTorch/cuBLAS full`
@@ -109,6 +111,7 @@ bash scripts/run_step3_fused_expand.sh
 bash scripts/run_scheme1_spatial_sharing.sh
 bash scripts/run_scheme2_horizontal_fusion.sh
 bash scripts/run_scheme3_column_concat.sh
+SCHEME2_VARIANT=grouped_persistent SCHEME2_NUM_DOWN_WORKERS=4 SCHEME2_CHUNK_SIZE=4 bash scripts/run_scheme2_horizontal_fusion.sh
 ```
 
 如果要在 A100 上看老师关心的前两层证据（grid 级并行度、SM 级 occupancy），推荐直接使用仓库内置的 Nsight profiling 脚本。它们会调用 benchmark 的 `--profile-only` 模式，并自动打 NVTX 标记：
@@ -117,6 +120,7 @@ bash scripts/run_scheme3_column_concat.sh
 bash scripts/profile_suite.sh
 bash scripts/profile_suite.sh baseline
 bash scripts/profile_suite.sh scheme2
+bash scripts/profile_suite.sh scheme2_persistent
 TOOL=nsys bash scripts/profile_suite.sh
 TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
 ```
@@ -126,7 +130,8 @@ TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
 - `profile_suite.sh` 是 profiling 的唯一入口：
   - `baseline`：只看 Triton 串行 baseline 中的 `X@A` 与 `X@C`
   - `scheme1`：只看方案1的 concurrent pair
-  - `scheme2`：只看方案2的 horizontal fused pair
+  - `scheme2`：只看方案2 `static_pid` 的 horizontal fused pair
+  - `scheme2_persistent`：只看方案2 `grouped_persistent` 的 persistent pair
   - `scheme3`：只看方案3某一个变体的 pair，默认 `physical_precat`
 - `TOOL=all` 时会同时跑 `nsys` 和 `ncu`；也可以切成 `TOOL=nsys` 或 `TOOL=ncu`。
 - `profile_suite.sh` 跑 `nsys` 时会：
@@ -154,6 +159,7 @@ NCU_SET=full TOOL=ncu bash scripts/profile_suite.sh scheme2
 
 ```bash
 M=64 H=4096 N=28672 R=8 DTYPE=fp16 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
+SCHEME2_NUM_DOWN_WORKERS=4 SCHEME2_CHUNK_SIZE=4 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2_persistent
 GPU_METRICS_DEVICE=all TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
 NSYS_USE_CAPTURE_RANGE=0 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
 ```

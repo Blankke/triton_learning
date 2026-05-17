@@ -4,6 +4,7 @@
 #   bash scripts/profile_suite.sh
 #   bash scripts/profile_suite.sh baseline
 #   bash scripts/profile_suite.sh scheme2
+#   bash scripts/profile_suite.sh scheme2_persistent
 #   TOOL=nsys bash scripts/profile_suite.sh
 #   TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
 #
@@ -13,15 +14,17 @@
 #   目标定义如下：
 #     - baseline：Triton 串行 baseline，只看 `Y=X@A` 与 `W=X@C`
 #     - scheme1：方案1 的 two-stream concurrent pair
-#     - scheme2：方案2 的 horizontal fused pair
+#     - scheme2：方案2 static_pid 的 horizontal fused pair
+#     - scheme2_persistent：方案2 grouped_persistent 的 persistent pair
 #     - scheme3：方案3指定变体的 pair，默认 `physical_precat`
 #   默认行为：
-#     - 不传位置参数时，按 baseline -> scheme1 -> scheme2 -> scheme3 全部执行
+#     - 不传位置参数时，按 baseline -> scheme1 -> scheme2 -> scheme2_persistent -> scheme3 全部执行
 #     - `TOOL=all` 时同时跑 nsys 与 ncu
 #     - `TOOL=nsys` 或 `TOOL=ncu` 时只跑其中一种
 #   常用环境变量：
 #     - VARIANT=physical_precat|logical_no_pad|logical_rpad_128|logical_c_first_no_pad
 #     - M/H/N/R/DTYPE
+#     - SCHEME2_NUM_DOWN_WORKERS / SCHEME2_CHUNK_SIZE
 #     - GPU_METRICS_DEVICE=all（仅当远端机器已开放 nsys GPU metrics 权限时再开启）
 #     - NSYS_PROFILE_WARMUP / NSYS_PROFILE_REPEAT（默认 1 / 20）
 #     - NSYS_USE_CAPTURE_RANGE=0（若某些机器对 NVTX capture-range 不兼容，可关闭自动截取）
@@ -79,6 +82,12 @@ resolve_target() {
     scheme2)
       module="fusion.bench_scheme2_horizontal_fusion"
       report_tag="scheme2_horizontal_pair"
+      extra_args+=(--variant static_pid)
+      ;;
+    scheme2_persistent)
+      module="fusion.bench_scheme2_horizontal_fusion"
+      report_tag="scheme2_grouped_persistent_pair"
+      extra_args+=(--variant grouped_persistent)
       ;;
     scheme3)
       module="fusion.bench_scheme3_column_concat"
@@ -90,6 +99,13 @@ resolve_target() {
       return 1
       ;;
   esac
+
+  if [[ "$target" == "scheme2_persistent" && -n "${SCHEME2_NUM_DOWN_WORKERS:-}" ]]; then
+    extra_args+=(--num-down-workers "${SCHEME2_NUM_DOWN_WORKERS}")
+  fi
+  if [[ "$target" == "scheme2_persistent" && -n "${SCHEME2_CHUNK_SIZE:-}" ]]; then
+    extra_args+=(--chunk-size "${SCHEME2_CHUNK_SIZE}")
+  fi
 
   printf '%s\n' "$module"
   printf '%s\n' "$report_tag"
@@ -359,13 +375,14 @@ case "$TARGET" in
     run_target baseline
     run_target scheme1
     run_target scheme2
+    run_target scheme2_persistent
     run_target scheme3
     ;;
-  baseline|scheme1|scheme2|scheme3)
+  baseline|scheme1|scheme2|scheme2_persistent|scheme3)
     run_target "$TARGET"
     ;;
   *)
-    echo "用法：bash scripts/profile_suite.sh [all|baseline|scheme1|scheme2|scheme3]" >&2
+    echo "用法：bash scripts/profile_suite.sh [all|baseline|scheme1|scheme2|scheme2_persistent|scheme3]" >&2
     exit 1
     ;;
 esac
