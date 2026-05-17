@@ -129,13 +129,21 @@ TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
   - `scheme2`：只看方案2的 horizontal fused pair
   - `scheme3`：只看方案3某一个变体的 pair，默认 `physical_precat`
 - `TOOL=all` 时会同时跑 `nsys` 和 `ncu`；也可以切成 `TOOL=nsys` 或 `TOOL=ncu`。
-- `profile_suite.sh` 跑 `nsys` 时会生成 `.nsys-rep` 和对应的 `cuda_gpu_kern_sum / cuda_gpu_trace / cuda_api_sum` 文本。
-- `profile_suite.sh` 跑 `ncu` 时会同时生成 `.ncu-rep` 和 CSV；默认抓取 grid size、block size、waves per SM、寄存器、shared memory、SM/DRAM 活跃度等关键指标。
-- `nsys` 默认使用 `NSYS_PROFILE_WARMUP=1`、`NSYS_PROFILE_REPEAT=20`，这样在 GUI 里更容易直接看见稳定阶段的 `SM Active`、kernel timeline 和两个子算子的边界。
+- `profile_suite.sh` 跑 `nsys` 时会：
+  - 只抓外层 NVTX `steady_state_capture` 区间，避免把 warmup / autotune 混进正式报告
+  - 生成 `.nsys-rep`、`_profile.log`，以及 `cuda_gpu_kern_sum / cuda_gpu_trace / cuda_api_sum` 文本
+- `profile_suite.sh` 跑 `ncu` 时会：
+  - 先生成 `.ncu-rep`
+  - 再从 `.ncu-rep` 单独导出 CSV，避免把 profiler 日志混进 CSV
+  - 同时保留 `_collect.log` 与 `_export.log` 方便远端排错
+- `nsys` 默认使用 `NSYS_PROFILE_WARMUP=1`、`NSYS_PROFILE_REPEAT=20`，这样在 GUI 里更容易直接看见稳定阶段的 kernel timeline 和两个子算子的边界。
+- 为了提高远端执行成功率，`profile_suite.sh` 默认不强制打开 `nsys` GPU metrics；如果远端 A100 已开放权限，再显式加 `GPU_METRICS_DEVICE=all` 获取 `SM Active` 等硬件采样。
+- 如果某些机器对 NVTX capture-range 不兼容，导致 `nsys` 没有落出报告，可临时加 `NSYS_USE_CAPTURE_RANGE=0`，退回到抓完整 profiling workload。
 - `baseline` 的 Triton 串行报告会额外打出两个子区间：
   - `baseline/op1_xa_triton`
   - `baseline/op3_xc_triton`
   这样既能看整个串行 pair，也能单独观察 `X@A` 和 `X@C`。
+- 某个 target 的 profiling 如果失败，脚本会继续尝试后续 target，并在最后统一汇总失败项，方便一次跑完后集中排查。
 - 如果想改成完整采集，可加 `NCU_SET=full`：
 
 ```bash
@@ -146,6 +154,8 @@ NCU_SET=full TOOL=ncu bash scripts/profile_suite.sh scheme2
 
 ```bash
 M=64 H=4096 N=28672 R=8 DTYPE=fp16 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
+GPU_METRICS_DEVICE=all TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
+NSYS_USE_CAPTURE_RANGE=0 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 bash scripts/profile_suite.sh scheme2
 ```
 
 - 如果想一条命令把四份 `nsys` / `ncu` 全部跑完：
