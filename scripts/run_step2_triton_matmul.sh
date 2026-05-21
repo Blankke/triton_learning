@@ -5,6 +5,7 @@
 #
 # 说明：
 #   运行 Step 2 的 Triton 主干矩阵乘，并与 PyTorch/cuBLAS 对比。
+#   结果默认写入 `output/triton_learning/benchmarks/step2_triton_vs_cublas.csv`。
 #   如需修改形状，可以在命令前设置环境变量：
 #   M=64 H=4096 N=28672 DTYPE=fp16 bash scripts/run_step2_triton_matmul.sh
 

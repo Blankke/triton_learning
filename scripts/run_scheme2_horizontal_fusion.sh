@@ -6,6 +6,7 @@
 # 说明：
 #   运行方案2 benchmark。
 #   默认会同时测量 `static_pid` 与 `grouped_persistent` 两个单 kernel 口径。
+#   结果默认写入 `output/fusion/benchmarks/fusion_scheme2_horizontal_fusion.csv`。
 #   如需修改形状，可以在命令前设置环境变量：
 #   M=64 H=4096 N=28672 R=8 DTYPE=fp16 bash scripts/run_scheme2_horizontal_fusion.sh
 #   如需只跑 grouped_persistent，并手动指定调度超参：

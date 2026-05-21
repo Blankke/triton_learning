@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/benchmarks/step1_baseline.csv"),
+        default=Path("output/triton_learning/benchmarks/step1_baseline.csv"),
         help="CSV 结果输出路径。",
     )
     return parser.parse_args()

@@ -6,6 +6,7 @@
 # 说明：
 #   一条命令复现原版 baseline 与三个“算子1 + 算子3”融合 benchmark。
 #   脚本会自动创建/复用仓库内 `.venv`，并安装 `requirements-cu128.txt` 中的依赖。
+#   结果会分别写入 `output/triton_learning/benchmarks/` 与 `output/fusion/benchmarks/`。
 #   如需缩短验证时间，可以在命令前设置：
 #   WARMUP=5 REPEAT=20 bash scripts/reproduce_all_fusion_benchmarks.sh
 

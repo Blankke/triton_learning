@@ -5,6 +5,7 @@
 #
 # 说明：
 #   运行 Step 3 的单 LoRA fused expand + main GEMM 验证。
+#   结果默认写入 `output/triton_learning/benchmarks/step3_fused_expand.csv`。
 #   如需修改形状，可以在命令前设置环境变量：
 #   M=64 H=4096 N=28672 R=8 DTYPE=fp16 bash scripts/run_step3_fused_expand.sh
 

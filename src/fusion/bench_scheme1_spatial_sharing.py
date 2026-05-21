@@ -61,7 +61,7 @@ def main() -> None:
     """执行方案1 benchmark。"""
     args = parse_common_args(
         "方案1：two-stream concurrent Triton kernels / 空分复用近似。",
-        "outputs/benchmarks/fusion_scheme1_spatial_sharing.csv",
+        "output/fusion/benchmarks/fusion_scheme1_spatial_sharing.csv",
         configure_parser=_configure_parser,
     )
     require_cuda()

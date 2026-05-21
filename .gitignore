@@ -1,4 +1,7 @@
 *.md
+!README.md
+!AGENTS.md
+!问题1.md
 docs/
 outputs/
 output/

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 用法：
-#   cd /home/czc/triton_learning
+#   cd /home/starrys/triton_learning
 #   bash scripts/profile_sharing.sh
 #   bash scripts/profile_sharing.sh experiment1
 #   bash scripts/profile_sharing.sh experiment2 single_fused

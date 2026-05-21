@@ -5,6 +5,7 @@
 #
 # 说明：
 #   运行方案3：column-concatenated GEMM / 列拼接融合。
+#   结果默认写入 `output/fusion/benchmarks/fusion_scheme3_column_concat.csv`。
 #   如需修改形状，可以在命令前设置环境变量：
 #   M=64 H=4096 N=28672 R=8 DTYPE=fp16 bash scripts/run_scheme3_column_concat.sh
 

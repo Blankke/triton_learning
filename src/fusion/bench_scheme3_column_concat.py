@@ -72,7 +72,7 @@ def main() -> None:
     """执行方案3 benchmark。"""
     args = parse_common_args(
         "方案3：column-concatenated GEMM / 列拼接融合。",
-        "outputs/benchmarks/fusion_scheme3_column_concat.csv",
+        "output/fusion/benchmarks/fusion_scheme3_column_concat.csv",
         configure_parser=_configure_parser,
     )
     require_cuda()

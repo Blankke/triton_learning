@@ -83,7 +83,7 @@ def main() -> None:
     """执行方案2 benchmark。"""
     args = parse_common_args(
         "方案2：single-kernel horizontal fusion。",
-        "outputs/benchmarks/fusion_scheme2_horizontal_fusion.csv",
+        "output/fusion/benchmarks/fusion_scheme2_horizontal_fusion.csv",
         configure_parser=_configure_parser,
     )
     require_cuda()

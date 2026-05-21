@@ -5,6 +5,7 @@
 #
 # 说明：
 #   运行方案1：two-stream concurrent Triton kernels / 空分复用近似。
+#   结果默认写入 `output/fusion/benchmarks/fusion_scheme1_spatial_sharing.csv`。
 #   如需修改形状，可以在命令前设置环境变量：
 #   M=64 H=4096 N=28672 R=8 DTYPE=fp16 bash scripts/run_scheme1_spatial_sharing.sh
 

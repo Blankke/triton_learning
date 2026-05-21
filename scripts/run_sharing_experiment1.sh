@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # 用法：
-#   cd /home/czc/triton_learning
+#   cd /home/starrys/triton_learning
 #   bash scripts/run_sharing_experiment1.sh
 #
 # 说明：
 #   运行 sharing 实验1：前半 worker 做 op1，后半 worker 做 op3。
 #   默认使用构造 workload `r=2048`。
+#   结果默认写入 `output/sharing/benchmarks/experiment1_half_split.csv`。
 #   如需覆盖默认参数，可在命令前设置环境变量：
 #   M=64 H=4096 N=28672 R=2048 DTYPE=fp16 bash scripts/run_sharing_experiment1.sh
 #   如需显式传 `SHARING_NUM_WORKERS`，它必须等于 `num_tiles_1 + num_tiles_3`。

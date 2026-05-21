@@ -9,8 +9,11 @@
 #   TOOL=ncu VARIANT=physical_precat bash scripts/profile_suite.sh scheme3
 #
 # 说明：
-#   这是仓库唯一的 profiling 总入口，会统一执行 Triton baseline / 方案1 / 方案2 / 方案3 的
+#   这是 fusion 目录的 profiling 总入口，会统一执行 Triton baseline / 方案1 / 方案2 / 方案3 的
 #   Nsight Systems 与 Nsight Compute 采集。
+#   输出会统一写到：
+#     - `output/fusion/nsys/*.nsys-rep`
+#     - `output/fusion/ncu/*.ncu-rep`
 #   目标定义如下：
 #     - baseline：Triton 串行 baseline，只看 `Y=X@A` 与 `W=X@C`
 #     - scheme1：方案1 的 two-stream concurrent pair
@@ -45,7 +48,7 @@ declare -a FAILED_TARGETS=()
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/activate_local_venv.sh"
 
-mkdir -p "$ROOT_DIR/outputs/nsys" "$ROOT_DIR/outputs/ncu"
+mkdir -p "$ROOT_DIR/output/fusion/nsys" "$ROOT_DIR/output/fusion/ncu"
 
 warn() {
   echo "警告: $*" >&2
@@ -126,7 +129,7 @@ run_nsys_target() {
   local module="${resolved[0]}"
   local report_tag="${resolved[1]}"
   local extra_args=("${resolved[@]:2}")
-  local report_base="$ROOT_DIR/outputs/nsys/${report_tag}"
+  local report_base="$ROOT_DIR/output/fusion/nsys/${report_tag}"
   local report_path="${report_base}.nsys-rep"
   local sqlite_path="${report_base}.sqlite"
   local profile_log="${report_base}_profile.log"
@@ -281,8 +284,8 @@ run_ncu_target() {
   local module="${resolved[0]}"
   local report_tag="${resolved[1]}"
   local extra_args=("${resolved[@]:2}")
-  local report_file="$ROOT_DIR/outputs/ncu/${report_tag}.csv"
-  local report_base="$ROOT_DIR/outputs/ncu/${report_tag}"
+  local report_file="$ROOT_DIR/output/fusion/ncu/${report_tag}.csv"
+  local report_base="$ROOT_DIR/output/fusion/ncu/${report_tag}"
   local report_path="${report_base}.ncu-rep"
   local collect_log="${report_base}_collect.log"
   local export_log="${report_base}_export.log"
