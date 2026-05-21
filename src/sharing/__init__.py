@@ -2,6 +2,7 @@
 sharing 实验包。
 
 使用示例：
+    python -m sharing.bench_five_way_comparison
     python -m sharing.bench_experiment1_half_split
     python -m sharing.bench_experiment2_interleaved
 
@@ -9,5 +10,10 @@ sharing 实验包。
     本目录专门放“按 pid range 分配 worker”的构造性实验。
     默认不再使用真实 workload 的 `r=8`，而是直接把 `r` 提升到 `2048`，
     用来验证 pid range 排列是否会影响 block-to-SM 映射与并发效果。
+    当前主入口是 `bench_five_way_comparison`：
+        - baseline
+        - stream_overlap
+        - single_fused_half_split
+        - single_fused_interleaved
+        - physical_concat
 """
-

@@ -50,12 +50,19 @@
 
 ### sharing 实验
 
-- 实验1入口：`python -m sharing.bench_experiment1_half_split`
-- 实验2入口：`python -m sharing.bench_experiment2_interleaved`
-- 实现：在单 kernel 中控制 pid range 与 tile 的映射关系，比较 baseline、stream overlap、single fused、physical concat 四种口径
+- 主入口：`python -m sharing.bench_five_way_comparison`
+- 实现：把真正不同的五种方法放到同一张表里比较
+- 五种口径：
+  - `baseline`
+  - `stream_overlap`
+  - `single_fused_half_split`
+  - `single_fused_interleaved`
+  - `physical_concat`
+- 两种 fused 调度分别对应：
+  - `single_fused_half_split`：前半 pid range 做 op1，后半 pid range 做 op3
+  - `single_fused_interleaved`：四段 pid range 交错做 op1 / op3 / op1 / op3
 - benchmark 输出：
-  - `output/sharing/benchmarks/experiment1_half_split.csv`
-  - `output/sharing/benchmarks/experiment2_interleaved.csv`
+  - `output/sharing/benchmarks/sharing_five_way_comparison.csv`
 - profiling 输出：
   - `output/sharing/nsys/*.nsys-rep`
   - `output/sharing/ncu/*.ncu-rep`
@@ -113,18 +120,19 @@ profiling 输出目录：
 ### sharing benchmark + profiling
 
 ```bash
+bash scripts/run_sharing_benchmark.sh
 bash scripts/run_sharing_all.sh
 RUN_PROFILE=0 bash scripts/run_sharing_all.sh
-TOOL=nsys bash scripts/run_sharing_all.sh experiment1 baseline
-TOOL=ncu bash scripts/run_sharing_all.sh experiment2 physical_concat
+TOOL=nsys bash scripts/run_sharing_all.sh single_fused_half_split
+TOOL=ncu bash scripts/run_sharing_all.sh physical_concat
 ```
 
 如只想单独跑 sharing profiling，也可以直接执行：
 
 ```bash
 bash scripts/profile_sharing.sh
-TOOL=nsys bash scripts/profile_sharing.sh experiment1 baseline
-TOOL=ncu bash scripts/profile_sharing.sh experiment2 physical_concat
+TOOL=nsys bash scripts/profile_sharing.sh baseline
+TOOL=ncu bash scripts/profile_sharing.sh single_fused_interleaved
 ```
 
 ## 输出目录规范

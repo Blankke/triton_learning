@@ -2,26 +2,24 @@
 # 用法：
 #   cd /home/starrys/triton_learning
 #   bash scripts/profile_sharing.sh
-#   bash scripts/profile_sharing.sh experiment1
-#   bash scripts/profile_sharing.sh experiment2 single_fused
-#   TOOL=nsys bash scripts/profile_sharing.sh experiment1 baseline
-#   TOOL=ncu bash scripts/profile_sharing.sh experiment2 physical_concat
+#   bash scripts/profile_sharing.sh single_fused_half_split
+#   bash scripts/profile_sharing.sh single_fused_interleaved
+#   TOOL=nsys bash scripts/profile_sharing.sh baseline
+#   TOOL=ncu bash scripts/profile_sharing.sh physical_concat
 #
 # 说明：
-#   这是 sharing 实验的 profiling 总入口，会统一生成：
+#   这是 sharing 五路对比的 profiling 总入口，会统一生成：
 #     - `output/sharing/nsys/*.nsys-rep`
 #     - `output/sharing/ncu/*.ncu-rep`
 #     - 以及对应导出的文本 / CSV / log
-#   目标定义如下：
-#     - experiment1：前半 worker 做 op1，后半 worker 做 op3
-#     - experiment2：四段 pid range 交错做 op1 / op3 / op1 / op3
 #   方法定义如下：
 #     - baseline
 #     - stream_overlap
-#     - single_fused
+#     - single_fused_half_split
+#     - single_fused_interleaved
 #     - physical_concat
 #   默认行为：
-#     - 不传参数时，会按 experiment1/2 的四种方法全部执行
+#     - 不传位置参数时，会把五种方法全部执行一遍
 #     - `TOOL=all` 时同时跑 nsys 与 ncu
 #     - `TOOL=nsys` 或 `TOOL=ncu` 时只跑其中一种
 #   常用环境变量：
@@ -38,8 +36,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-TARGET="${1:-all}"
-METHOD="${2:-all}"
+METHOD="${1:-all}"
 TOOL="${TOOL:-all}"
 NSYS_CAPTURE_RANGE_NAME="${NSYS_CAPTURE_RANGE_NAME:-steady_state_capture}"
 declare -a FAILED_TARGETS=()
@@ -65,33 +62,20 @@ print_python_env() {
 }
 
 resolve_module() {
-  local target="$1"
-  case "$target" in
-    experiment1)
-      printf '%s\n' "sharing.bench_experiment1_half_split"
-      ;;
-    experiment2)
-      printf '%s\n' "sharing.bench_experiment2_interleaved"
-      ;;
-    *)
-      echo "不支持的 experiment: $target" >&2
-      return 1
-      ;;
-  esac
+  printf '%s\n' "sharing.bench_five_way_comparison"
 }
 
 run_nsys_target() {
-  local target="$1"
-  local method="$2"
+  local method="$1"
   if ! command -v nsys >/dev/null 2>&1; then
-    warn "未找到 nsys，跳过 $target/$method。"
-    record_failure "nsys/$target/$method：本机未安装 nsys"
+    warn "未找到 nsys，跳过 $method。"
+    record_failure "nsys/$method：本机未安装 nsys"
     return 0
   fi
 
   local module
-  module="$(resolve_module "$target")"
-  local report_tag="${target}_${method}"
+  module="$(resolve_module)"
+  local report_tag="sharing_${method}"
   local report_base="$ROOT_DIR/output/sharing/nsys/${report_tag}"
   local report_path="${report_base}.nsys-rep"
   local sqlite_path="${report_base}.sqlite"
@@ -121,7 +105,7 @@ run_nsys_target() {
     "${report_base}_cuda_api_sum.log"
 
   echo
-  echo "===== Nsight Systems: $target / $method ====="
+  echo "===== Nsight Systems: $method ====="
   print_python_env
   echo "开始采集 Nsight Systems: $report_path"
   if [[ "$use_capture_range" != "0" ]]; then
@@ -205,7 +189,7 @@ run_nsys_target() {
 
   if [[ ! -s "$report_path" ]]; then
     warn "Nsight Systems 采集失败，未生成报告。日志：$profile_log"
-    record_failure "nsys/$target/$method：采集失败（退出码 $profile_status）"
+    record_failure "nsys/$method：采集失败（退出码 $profile_status）"
     return 0
   fi
 
@@ -234,17 +218,16 @@ run_nsys_target() {
 }
 
 run_ncu_target() {
-  local target="$1"
-  local method="$2"
+  local method="$1"
   if ! command -v ncu >/dev/null 2>&1; then
-    warn "未找到 ncu，跳过 $target/$method。"
-    record_failure "ncu/$target/$method：本机未安装 ncu"
+    warn "未找到 ncu，跳过 $method。"
+    record_failure "ncu/$method：本机未安装 ncu"
     return 0
   fi
 
   local module
-  module="$(resolve_module "$target")"
-  local report_tag="${target}_${method}"
+  module="$(resolve_module)"
+  local report_tag="sharing_${method}"
   local report_file="$ROOT_DIR/output/sharing/ncu/${report_tag}.csv"
   local report_base="$ROOT_DIR/output/sharing/ncu/${report_tag}"
   local report_path="${report_base}.ncu-rep"
@@ -266,7 +249,7 @@ run_ncu_target() {
   rm -f "$report_file" "$report_path" "$collect_log" "$export_log"
 
   echo
-  echo "===== Nsight Compute: $target / $method ====="
+  echo "===== Nsight Compute: $method ====="
   print_python_env
   echo "开始采集 Nsight Compute: $report_file"
   echo "同时导出 Nsight Compute report: $report_path"
@@ -291,7 +274,7 @@ run_ncu_target() {
 
   if [[ $collect_status -ne 0 && ! -s "$report_path" ]]; then
     warn "Nsight Compute 采集失败，未生成报告。日志：$collect_log"
-    record_failure "ncu/$target/$method：采集失败（退出码 $collect_status）"
+    record_failure "ncu/$method：采集失败（退出码 $collect_status）"
     return 0
   fi
 
@@ -316,18 +299,17 @@ run_ncu_target() {
 }
 
 run_target() {
-  local target="$1"
-  local method="$2"
+  local method="$1"
   case "$TOOL" in
     all)
-      run_nsys_target "$target" "$method"
-      run_ncu_target "$target" "$method"
+      run_nsys_target "$method"
+      run_ncu_target "$method"
       ;;
     nsys)
-      run_nsys_target "$target" "$method"
+      run_nsys_target "$method"
       ;;
     ncu)
-      run_ncu_target "$target" "$method"
+      run_ncu_target "$method"
       ;;
     *)
       echo "不支持的 TOOL=$TOOL，请使用 all / nsys / ncu" >&2
@@ -336,38 +318,26 @@ run_target() {
   esac
 }
 
-run_methods_for_target() {
-  local target="$1"
+run_methods() {
   case "$METHOD" in
     all)
-      run_target "$target" baseline
-      run_target "$target" stream_overlap
-      run_target "$target" single_fused
-      run_target "$target" physical_concat
+      run_target baseline
+      run_target stream_overlap
+      run_target single_fused_half_split
+      run_target single_fused_interleaved
+      run_target physical_concat
       ;;
-    baseline|stream_overlap|single_fused|physical_concat)
-      run_target "$target" "$METHOD"
+    baseline|stream_overlap|single_fused_half_split|single_fused_interleaved|physical_concat)
+      run_target "$METHOD"
       ;;
     *)
-      echo "不支持的 method: $METHOD" >&2
+      echo "用法：bash scripts/profile_sharing.sh [all|baseline|stream_overlap|single_fused_half_split|single_fused_interleaved|physical_concat]" >&2
       exit 1
       ;;
   esac
 }
 
-case "$TARGET" in
-  all)
-    run_methods_for_target experiment1
-    run_methods_for_target experiment2
-    ;;
-  experiment1|experiment2)
-    run_methods_for_target "$TARGET"
-    ;;
-  *)
-    echo "用法：bash scripts/profile_sharing.sh [all|experiment1|experiment2] [all|baseline|stream_overlap|single_fused|physical_concat]" >&2
-    exit 1
-    ;;
-esac
+run_methods
 
 if ((${#FAILED_TARGETS[@]} > 0)); then
   echo
