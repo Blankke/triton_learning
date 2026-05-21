@@ -28,6 +28,12 @@ src/fusion/
 ├── bench_scheme1_spatial_sharing.py
 ├── bench_scheme2_horizontal_fusion.py
 └── bench_scheme3_column_concat.py
+
+src/sharing/
+├── range_fusion.py             # sharing 实验专用：按 pid range 静态分配 worker 的单 kernel
+├── benchmarks.py               # sharing 实验共用 benchmark 驱动
+├── bench_experiment1_half_split.py
+└── bench_experiment2_interleaved.py
 ```
 
 ## 实现细节
@@ -67,6 +73,26 @@ src/fusion/
 - 三个 benchmark 都额外记录两组 full baseline：
   - 原版 `PyTorch/cuBLAS full`
   - `Triton` 串行执行 `Y=X@A`、`W=X@C` 后再接后续算子的 full
+
+### sharing 实验
+
+- `src/sharing/` 单独放一组“构造 workload”实验，不再测真实参数 `r=8`，默认直接把 `r` 提升到 `2048`。
+- 目标是验证老师提出的 pid range 排列是否会影响 block-to-SM 映射与并发效果，因此这里统一使用 worker-range 口径：
+  - 一个 pid 不再只算一个 tile，而是先归属到某个连续 range，再以固定 stride 扫完整个 op tile 空间。
+- 实验1：`bench_experiment1_half_split.py`
+  - 前半 worker 做 op1
+  - 后半 worker 做 op3
+- 实验2：`bench_experiment2_interleaved.py`
+  - 四段 range 交错做 `op1 / op3 / op1 / op3`
+- 两个 sharing benchmark 都统一比较四种方法：
+  - baseline：op1 单独 kernel + op3 单独 kernel
+  - stream overlap：两个 CUDA stream 并发 launch
+  - single fused：sharing 单 kernel
+  - physical concat：`X @ [A, C]`
+- sharing 的 benchmark / profiling 输出统一写到：
+  - `output/sharing/benchmarks/`
+  - `output/sharing/nsys/`
+  - `output/sharing/ncu/`
 
 参考学习资料：
 - `docs/fusion.md`
@@ -112,6 +138,21 @@ bash scripts/run_scheme1_spatial_sharing.sh
 bash scripts/run_scheme2_horizontal_fusion.sh
 bash scripts/run_scheme3_column_concat.sh
 SCHEME2_VARIANT=grouped_persistent SCHEME2_NUM_DOWN_WORKERS=4 SCHEME2_CHUNK_SIZE=4 bash scripts/run_scheme2_horizontal_fusion.sh
+```
+
+执行 sharing 两个构造实验：
+
+```bash
+bash scripts/run_sharing_experiment1.sh
+bash scripts/run_sharing_experiment2.sh
+bash scripts/run_sharing_all.sh
+```
+
+如果想显式传 sharing worker 数：
+
+```bash
+SHARING_NUM_WORKERS=<num_tiles_1+num_tiles_3> bash scripts/run_sharing_experiment1.sh
+SHARING_NUM_WORKERS=<num_tiles_1+num_tiles_3> bash scripts/run_sharing_experiment2.sh
 ```
 
 如果要在 A100 上看老师关心的前两层证据（grid 级并行度、SM 级 occupancy），推荐直接使用仓库内置的 Nsight profiling 脚本。它们会调用 benchmark 的 `--profile-only` 模式，并自动打 NVTX 标记：
@@ -169,6 +210,26 @@ NSYS_USE_CAPTURE_RANGE=0 TOOL=nsys NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 
 ```bash
 VARIANT=physical_precat TOOL=all NSYS_PROFILE_WARMUP=1 NSYS_PROFILE_REPEAT=20 NCU_PROFILE_WARMUP=1 NCU_PROFILE_REPEAT=1 bash scripts/profile_suite.sh
 ```
+
+sharing 实验也提供独立 profiling 入口：
+
+```bash
+bash scripts/profile_sharing.sh
+bash scripts/profile_sharing.sh experiment1
+bash scripts/profile_sharing.sh experiment2 single_fused
+TOOL=nsys bash scripts/profile_sharing.sh experiment1 baseline
+TOOL=ncu bash scripts/profile_sharing.sh experiment2 physical_concat
+```
+
+说明：
+
+- `profile_sharing.sh` 会把结果统一输出到 `output/sharing/nsys/` 和 `output/sharing/ncu/`。
+- 默认 `R=2048`，如果不显式覆盖，就不会回到真实 workload 的 `r=8`。
+- 每个 experiment 都会分别对四种方法产出独立的 `.nsys-rep` / `.ncu-rep`：
+  - `baseline`
+  - `stream_overlap`
+  - `single_fused`
+  - `physical_concat`
 
 如果需要自定义形状，可以在脚本前传环境变量，例如：
 

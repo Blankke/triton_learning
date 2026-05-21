@@ -1,6 +1,7 @@
 *.md
 docs/
 outputs/
+output/
 *.log
 *.tmp
 *.bak
