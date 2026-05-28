@@ -135,6 +135,8 @@ TOOL=nsys bash scripts/profile_sharing.sh baseline
 TOOL=ncu bash scripts/profile_sharing.sh single_fused_interleaved
 ```
 
+其中 `profile_sharing.sh` 在 NCU 路径下默认会结合 kernel-name 与 NVTX range 过滤，只抓目标方法的正式 kernel，避免把 warmup、autotune 和无关辅助 kernel 一起灌进报告。
+
 ## 输出目录规范
 
 运行完成后，结果会按源码域分别落盘：

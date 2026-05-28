@@ -162,6 +162,7 @@ def main() -> None:
     inputs = create_inputs(shape, dtype, torch.device("cuda"), args.seed)
     refs = compute_references(inputs)
     ac = torch.cat([inputs.a, inputs.c], dim=1).contiguous()
+    stream_device_index = torch.cuda.current_device() if inputs.x.device.index is None else inputs.x.device.index
     half_split_schedule = build_half_split_schedule(shape.m, shape.r, shape.n, inputs.x.device, num_workers=args.num_workers)
     interleaved_schedule = build_interleaved_schedule(
         shape.m,
@@ -172,6 +173,8 @@ def main() -> None:
     )
     y_profile = torch.empty((shape.m, shape.r), device=inputs.x.device, dtype=inputs.x.dtype)
     w_profile = torch.empty((shape.m, shape.n), device=inputs.x.device, dtype=inputs.x.dtype)
+    stream_overlap_down_profile_stream = torch.cuda.Stream(device=stream_device_index)
+    stream_overlap_main_profile_stream = torch.cuda.Stream(device=stream_device_index)
 
     print_shape("sharing 五路对比矩阵形状：", shape)
     print(f"  sharing 默认构造 workload：r 建议使用 {DEFAULT_CONSTRUCTED_R}")
@@ -194,27 +197,54 @@ def main() -> None:
     def run_stream_overlap_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
 
+    def run_stream_overlap_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
+        # stream_overlap 本质上还是两个独立 Triton GEMM，只是放进两个 stream 并发 launch。
+        current = torch.cuda.current_stream()
+        stream_overlap_down_profile_stream.wait_stream(current)
+        stream_overlap_main_profile_stream.wait_stream(current)
+        with torch.cuda.stream(stream_overlap_down_profile_stream):
+            with cuda_nvtx_range("sharing/five_way/stream_overlap/op1_xa_triton"):
+                launch_triton_matmul(inputs.x, inputs.a, y_profile)
+        with torch.cuda.stream(stream_overlap_main_profile_stream):
+            with cuda_nvtx_range("sharing/five_way/stream_overlap/op3_xc_triton"):
+                launch_triton_matmul(inputs.x, inputs.c, w_profile)
+        current.wait_stream(stream_overlap_down_profile_stream)
+        current.wait_stream(stream_overlap_main_profile_stream)
+        return y_profile, w_profile
+
     def run_single_fused_half_split_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_range_fused_down_main(inputs.x, inputs.a, inputs.c, half_split_schedule)
+
+    def run_single_fused_half_split_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
+        with cuda_nvtx_range("sharing/five_way/single_fused_half_split/range_fused_kernel"):
+            return triton_range_fused_down_main(inputs.x, inputs.a, inputs.c, half_split_schedule)
 
     def run_single_fused_interleaved_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_range_fused_down_main(inputs.x, inputs.a, inputs.c, interleaved_schedule)
 
+    def run_single_fused_interleaved_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
+        with cuda_nvtx_range("sharing/five_way/single_fused_interleaved/range_fused_kernel"):
+            return triton_range_fused_down_main(inputs.x, inputs.a, inputs.c, interleaved_schedule)
+
     def run_physical_concat_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_physical_concat_precat(inputs.x, ac, shape.r)
 
+    def run_physical_concat_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
+        with cuda_nvtx_range("sharing/five_way/physical_concat/matmul_kernel"):
+            return triton_physical_concat_precat(inputs.x, ac, shape.r)
+
     profile_map: dict[str, tuple[str, Callable[[], tuple[torch.Tensor, torch.Tensor]]]] = {
         PROFILE_BASELINE: ("sharing/five_way/baseline_pair", run_baseline_pair_profiled),
-        PROFILE_STREAM_OVERLAP: ("sharing/five_way/stream_overlap_pair", run_stream_overlap_pair),
+        PROFILE_STREAM_OVERLAP: ("sharing/five_way/stream_overlap_pair", run_stream_overlap_pair_profiled),
         PROFILE_SINGLE_FUSED_HALF_SPLIT: (
             "sharing/five_way/single_fused_half_split_pair",
-            run_single_fused_half_split_pair,
+            run_single_fused_half_split_pair_profiled,
         ),
         PROFILE_SINGLE_FUSED_INTERLEAVED: (
             "sharing/five_way/single_fused_interleaved_pair",
-            run_single_fused_interleaved_pair,
+            run_single_fused_interleaved_pair_profiled,
         ),
-        PROFILE_PHYSICAL_CONCAT: ("sharing/five_way/physical_concat_pair", run_physical_concat_pair),
+        PROFILE_PHYSICAL_CONCAT: ("sharing/five_way/physical_concat_pair", run_physical_concat_pair_profiled),
     }
 
     if args.profile_only:

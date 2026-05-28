@@ -28,6 +28,7 @@
 #     - NSYS_PROFILE_WARMUP / NSYS_PROFILE_REPEAT
 #     - NCU_PROFILE_WARMUP / NCU_PROFILE_REPEAT
 #     - NCU_SET=full
+#     - NCU_KERNEL_NAME / NCU_NVTX_INCLUDE / NCU_LAUNCH_SKIP / NCU_LAUNCH_COUNT（用于覆盖默认过滤）
 #     - GPU_METRICS_DEVICE=all
 #     - NSYS_USE_CAPTURE_RANGE=0
 
@@ -65,6 +66,63 @@ resolve_module() {
   printf '%s\n' "sharing.bench_five_way_comparison"
 }
 
+resolve_ncu_kernel_name() {
+  local method="$1"
+  case "$method" in
+    baseline|stream_overlap|physical_concat)
+      printf '%s\n' "regex:.*_matmul_kernel.*"
+      ;;
+    single_fused_half_split|single_fused_interleaved)
+      printf '%s\n' "regex:.*_range_fused_kernel.*"
+      ;;
+    *)
+      echo "不支持的 method: $method" >&2
+      return 1
+      ;;
+  esac
+}
+
+resolve_ncu_launch_count() {
+  local method="$1"
+  case "$method" in
+    baseline|stream_overlap)
+      printf '%s\n' "2"
+      ;;
+    physical_concat|single_fused_half_split|single_fused_interleaved)
+      printf '%s\n' "1"
+      ;;
+    *)
+      echo "不支持的 method: $method" >&2
+      return 1
+      ;;
+  esac
+}
+
+resolve_ncu_nvtx_include() {
+  local method="$1"
+  case "$method" in
+    baseline)
+      printf '%s\n' "sharing/five_way/baseline_pair/"
+      ;;
+    stream_overlap)
+      printf '%s\n' "sharing/five_way/stream_overlap_pair/"
+      ;;
+    single_fused_half_split)
+      printf '%s\n' "sharing/five_way/single_fused_half_split_pair/"
+      ;;
+    single_fused_interleaved)
+      printf '%s\n' "sharing/five_way/single_fused_interleaved_pair/"
+      ;;
+    physical_concat)
+      printf '%s\n' "sharing/five_way/physical_concat_pair/"
+      ;;
+    *)
+      echo "不支持的 method: $method" >&2
+      return 1
+      ;;
+  esac
+}
+
 run_nsys_target() {
   local method="$1"
   if ! command -v nsys >/dev/null 2>&1; then
@@ -90,7 +148,7 @@ run_nsys_target() {
   local use_capture_range="${NSYS_USE_CAPTURE_RANGE:-1}"
 
   if [[ -n "$gpu_metrics_device_value" ]]; then
-    gpu_metrics_args+=(--gpu-metrics-devices="$gpu_metrics_device_value")
+    gpu_metrics_args+=(--gpu-metrics-device="$gpu_metrics_device_value")
   fi
 
   rm -f \
@@ -237,14 +295,42 @@ run_ncu_target() {
   local repeat="${NCU_PROFILE_REPEAT:-${PROFILE_REPEAT:-1}}"
   local default_metrics="launch__grid_size,launch__block_size,launch__registers_per_thread,launch__shared_mem_per_block_static,launch__shared_mem_per_block_dynamic,launch__waves_per_multiprocessor,sm__warps_active.avg.pct_of_peak_sustained_active,sm__throughput.avg.pct_of_peak_sustained_elapsed,dram__throughput.avg.pct_of_peak_sustained_elapsed"
   local ncu_args=(--target-processes all --force-overwrite --export "$report_base")
+  local kernel_name_filter="${NCU_KERNEL_NAME:-}"
+  local nvtx_include_filter="${NCU_NVTX_INCLUDE:-}"
+  local launch_count_override="${NCU_LAUNCH_COUNT:-}"
+  local launch_skip="${NCU_LAUNCH_SKIP:-0}"
+  local nvtx_rename_mode="${NCU_PRINT_NVTX_RENAME:-kernel}"
   local collect_status=0
   local export_status=0
+
+  if [[ -z "$kernel_name_filter" ]]; then
+    kernel_name_filter="$(resolve_ncu_kernel_name "$method")"
+  fi
+  if [[ -z "$nvtx_include_filter" ]]; then
+    nvtx_include_filter="$(resolve_ncu_nvtx_include "$method")"
+  fi
+  if [[ -z "$launch_count_override" ]]; then
+    launch_count_override="$(resolve_ncu_launch_count "$method")"
+  fi
 
   if [[ -n "${NCU_SET:-}" ]]; then
     ncu_args+=(--set "$NCU_SET")
   else
     ncu_args+=(--metrics "${NCU_METRICS:-$default_metrics}")
   fi
+  if [[ -n "$kernel_name_filter" ]]; then
+    ncu_args+=(--kernel-name "$kernel_name_filter")
+  fi
+  if [[ -n "$nvtx_include_filter" ]]; then
+    ncu_args+=(--nvtx --nvtx-include "$nvtx_include_filter")
+  fi
+  if [[ -n "$nvtx_rename_mode" ]]; then
+    ncu_args+=(--print-nvtx-rename "$nvtx_rename_mode")
+  fi
+  if [[ -n "$launch_count_override" ]]; then
+    ncu_args+=(--launch-count "$launch_count_override")
+  fi
+  ncu_args+=(--launch-skip "$launch_skip")
 
   rm -f "$report_file" "$report_path" "$collect_log" "$export_log"
 
@@ -253,6 +339,11 @@ run_ncu_target() {
   print_python_env
   echo "开始采集 Nsight Compute: $report_file"
   echo "同时导出 Nsight Compute report: $report_path"
+  echo "NCU 过滤条件："
+  echo "  kernel-name: $kernel_name_filter"
+  echo "  nvtx-include: $nvtx_include_filter"
+  echo "  launch-skip: $launch_skip"
+  echo "  launch-count: $launch_count_override"
 
   set +e
   ncu \
