@@ -36,7 +36,7 @@ from fusion.common import (
     print_shape,
     shape_from_args,
 )
-from fusion.scheme1_spatial_sharing import triton_spatial_sharing_down_main
+from fusion.scheme1_spatial_sharing import launch_triton_matmul_pair, triton_spatial_sharing_down_main
 from fusion.scheme3_column_concat import triton_physical_concat_precat
 from sharing.range_fusion import (
     DEFAULT_CONSTRUCTED_R,
@@ -55,7 +55,6 @@ from triton_learning.benchmark_utils import (
     require_cuda,
     run_profiled_callable,
 )
-from triton_learning.kernels.matmul import launch_triton_matmul
 
 
 PROFILE_BASELINE = "baseline"
@@ -162,7 +161,6 @@ def main() -> None:
     inputs = create_inputs(shape, dtype, torch.device("cuda"), args.seed)
     refs = compute_references(inputs)
     ac = torch.cat([inputs.a, inputs.c], dim=1).contiguous()
-    stream_device_index = torch.cuda.current_device() if inputs.x.device.index is None else inputs.x.device.index
     half_split_schedule = build_half_split_schedule(shape.m, shape.r, shape.n, inputs.x.device, num_workers=args.num_workers)
     interleaved_schedule = build_interleaved_schedule(
         shape.m,
@@ -173,8 +171,6 @@ def main() -> None:
     )
     y_profile = torch.empty((shape.m, shape.r), device=inputs.x.device, dtype=inputs.x.dtype)
     w_profile = torch.empty((shape.m, shape.n), device=inputs.x.device, dtype=inputs.x.dtype)
-    stream_overlap_down_profile_stream = torch.cuda.Stream(device=stream_device_index)
-    stream_overlap_main_profile_stream = torch.cuda.Stream(device=stream_device_index)
 
     print_shape("sharing 五路对比矩阵形状：", shape)
     print(f"  sharing 默认构造 workload：r 建议使用 {DEFAULT_CONSTRUCTED_R}")
@@ -187,29 +183,40 @@ def main() -> None:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=False)
 
     def run_baseline_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
-        # baseline 仍然是两个独立 Triton GEMM；这里额外打子区间，便于在 nsys 里看清 op1/op3。
-        with cuda_nvtx_range("sharing/five_way/baseline/op1_xa_triton"):
-            launch_triton_matmul(inputs.x, inputs.a, y_profile)
-        with cuda_nvtx_range("sharing/five_way/baseline/op3_xc_triton"):
-            launch_triton_matmul(inputs.x, inputs.c, w_profile)
+        # baseline 仍然是两个独立 Triton GEMM；这里只是沿用统一的 launch 路径，
+        # 同时给两个 kernel 打独立 NVTX range，便于在 nsys / ncu 里定位。
+        launch_triton_matmul_pair(
+            inputs.x,
+            inputs.a,
+            inputs.c,
+            y_profile,
+            w_profile,
+            concurrent=False,
+            range_titles=(
+                "sharing/five_way/baseline/op1_xa_triton",
+                "sharing/five_way/baseline/op3_xc_triton",
+            ),
+        )
         return y_profile, w_profile
 
     def run_stream_overlap_pair() -> tuple[torch.Tensor, torch.Tensor]:
         return triton_spatial_sharing_down_main(inputs.x, inputs.a, inputs.c, concurrent=True)
 
     def run_stream_overlap_pair_profiled() -> tuple[torch.Tensor, torch.Tensor]:
-        # stream_overlap 本质上还是两个独立 Triton GEMM，只是放进两个 stream 并发 launch。
-        current = torch.cuda.current_stream()
-        stream_overlap_down_profile_stream.wait_stream(current)
-        stream_overlap_main_profile_stream.wait_stream(current)
-        with torch.cuda.stream(stream_overlap_down_profile_stream):
-            with cuda_nvtx_range("sharing/five_way/stream_overlap/op1_xa_triton"):
-                launch_triton_matmul(inputs.x, inputs.a, y_profile)
-        with torch.cuda.stream(stream_overlap_main_profile_stream):
-            with cuda_nvtx_range("sharing/five_way/stream_overlap/op3_xc_triton"):
-                launch_triton_matmul(inputs.x, inputs.c, w_profile)
-        current.wait_stream(stream_overlap_down_profile_stream)
-        current.wait_stream(stream_overlap_main_profile_stream)
+        # stream_overlap 与 benchmark 复用同一条双 stream launch 路径，
+        # 避免 profiling 专用代码和真实 benchmark 行为分叉。
+        launch_triton_matmul_pair(
+            inputs.x,
+            inputs.a,
+            inputs.c,
+            y_profile,
+            w_profile,
+            concurrent=True,
+            range_titles=(
+                "sharing/five_way/stream_overlap/op1_xa_triton",
+                "sharing/five_way/stream_overlap/op3_xc_triton",
+            ),
+        )
         return y_profile, w_profile
 
     def run_single_fused_half_split_pair() -> tuple[torch.Tensor, torch.Tensor]:

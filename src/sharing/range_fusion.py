@@ -450,7 +450,7 @@ def _range_fused_kernel(
             selected_local_rank = worker_id - range2_end
             selected_base = RANGE3_BASE
 
-    if selected_kind == _OP1_KIND:
+    if selected_kind == 1:
         op1_worker_rank = selected_base + selected_local_rank
         tile_id = op1_worker_rank
         while tile_id < num_tiles_op1:

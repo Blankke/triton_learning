@@ -58,14 +58,27 @@
   - `single_fused_half_split`
   - `single_fused_interleaved`
   - `physical_concat`
+- stream overlap 修复：
+  - 双 stream launch 现在统一走 `fusion.scheme1_spatial_sharing.launch_triton_matmul_pair`
+  - 并发路径改成“显式 CUDA event 边界 + 持久化 stream/event 复用”，避免 profiling 专用路径和 benchmark 路径分叉
+  - 这样在远端 A100 上用 `nsys` 看 `stream_overlap` 时，更容易直接看到两个 kernel 的真实并发关系
+- profiling 修复：
+  - sharing 统一改为新的场景脚本 `scripts/run_sharing_profile_cases.sh`
+  - `ncu` 默认使用 `--set full`，并额外导出 `raw` / `details` 页面，补齐之前缺失的 detail 页面指标
+  - `nsys` 输出按场景拆到不同目录，真实场景和构造场景不会再混在一起
 - 两种 fused 调度分别对应：
   - `single_fused_half_split`：前半 pid range 做 op1，后半 pid range 做 op3
   - `single_fused_interleaved`：四段 pid range 交错做 op1 / op3 / op1 / op3
+- 场景预设：
+  - `real_r8`：`M=64, H=4096, N=28672, R=8`
+  - `constructed_50_blocks`：`M=64, H=4096, N=1664, R=1664`，按当前 sharing 代码使用的 `16x128` 参考口径，`op1/op3` 都约 `52 blocks`
 - benchmark 输出：
-  - `output/sharing/benchmarks/sharing_five_way_comparison.csv`
+  - `output/sharing/scenarios/<scenario>/benchmarks/sharing_five_way_comparison.csv`
 - profiling 输出：
-  - `output/sharing/nsys/*.nsys-rep`
-  - `output/sharing/ncu/*.ncu-rep`
+  - `output/sharing/scenarios/<scenario>/nsys/*.nsys-rep`
+  - `output/sharing/scenarios/<scenario>/ncu/*.ncu-rep`
+  - `output/sharing/scenarios/<scenario>/ncu/*_raw.csv`
+  - `output/sharing/scenarios/<scenario>/ncu/*_details.csv`
 
 ## 参考学习资料
 
@@ -120,22 +133,26 @@ profiling 输出目录：
 ### sharing benchmark + profiling
 
 ```bash
-bash scripts/run_sharing_benchmark.sh
-bash scripts/run_sharing_all.sh
-RUN_PROFILE=0 bash scripts/run_sharing_all.sh
-TOOL=nsys bash scripts/run_sharing_all.sh single_fused_half_split
-TOOL=ncu bash scripts/run_sharing_all.sh physical_concat
+bash scripts/run_sharing_profile_cases.sh
+SCENARIO=real_r8 bash scripts/run_sharing_profile_cases.sh
+SCENARIO=constructed_50_blocks bash scripts/run_sharing_profile_cases.sh
+SCENARIO=constructed_50_blocks PROFILE_METHOD=all bash scripts/run_sharing_profile_cases.sh
+RUN_BENCH=0 TOOL=nsys bash scripts/run_sharing_profile_cases.sh
+RUN_BENCH=0 TOOL=ncu NCU_SET=full bash scripts/run_sharing_profile_cases.sh
 ```
 
-如只想单独跑 sharing profiling，也可以直接执行：
+默认脚本会依次执行两个场景：
 
 ```bash
-bash scripts/profile_sharing.sh
-TOOL=nsys bash scripts/profile_sharing.sh baseline
-TOOL=ncu bash scripts/profile_sharing.sh single_fused_interleaved
+bash scripts/run_sharing_profile_cases.sh
 ```
 
-其中 `profile_sharing.sh` 在 NCU 路径下默认会结合 kernel-name 与 NVTX range 过滤，只抓目标方法的正式 kernel，避免把 warmup、autotune 和无关辅助 kernel 一起灌进报告。
+其中：
+
+- `real_r8` 会复现真实 `r=8` 场景
+- `constructed_50_blocks` 会复现“两个 op 都约 50 block”的构造场景
+- `PROFILE_METHOD` 默认是 `stream_overlap`，因为这个场景最适合直接排查 `nsys` 里的双 stream 并发
+- `ncu` 默认使用 `--set full`，会同时保留 `.ncu-rep` 与导出的 `details/raw` 页面 CSV
 
 ## 输出目录规范
 
@@ -145,8 +162,7 @@ TOOL=ncu bash scripts/profile_sharing.sh single_fused_interleaved
 - `output/fusion/benchmarks/`
 - `output/fusion/nsys/`
 - `output/fusion/ncu/`
-- `output/sharing/benchmarks/`
-- `output/sharing/nsys/`
-- `output/sharing/ncu/`
+- `output/sharing/scenarios/real_r8/`
+- `output/sharing/scenarios/constructed_50_blocks/`
 
 历史 `outputs/` 目录中的旧结果暂时保留，不作为新的默认输出位置。
