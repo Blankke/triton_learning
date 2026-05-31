@@ -3,8 +3,9 @@
 #   cd /home/starrys/triton_learning
 #   bash scripts/run_sharing_profile_cases.sh
 #   SCENARIO=real_r8 bash scripts/run_sharing_profile_cases.sh
-#   SCENARIO=constructed_50_blocks PROFILE_METHOD=all bash scripts/run_sharing_profile_cases.sh
+#   SCENARIO=constructed_50_blocks PROFILE_METHOD=physical_concat bash scripts/run_sharing_profile_cases.sh
 #   RUN_BENCH=0 TOOL=ncu NCU_SET=full bash scripts/run_sharing_profile_cases.sh
+#   GPU_METRICS_DEVICE=all bash scripts/run_sharing_profile_cases.sh
 #
 # 说明：
 #   统一执行 sharing 的两组关键场景，并把结果拆分写入不同文件夹：
@@ -15,7 +16,7 @@
 #   默认行为：
 #     - `SCENARIO=both`：依次执行上述两组场景
 #     - 每组场景先跑一次 sharing 五路 benchmark
-#     - 然后对 `PROFILE_METHOD=stream_overlap` 生成 Nsight Systems + Nsight Compute 报告
+#     - 然后对五种方法全部生成 Nsight Systems + Nsight Compute 报告
 #   输出目录：
 #     - `output/sharing/scenarios/<scenario>/benchmarks/`
 #     - `output/sharing/scenarios/<scenario>/nsys/`
@@ -37,11 +38,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SCENARIO="${SCENARIO:-both}"
-PROFILE_METHOD="${PROFILE_METHOD:-stream_overlap}"
+PROFILE_METHOD="${PROFILE_METHOD:-all}"
 TOOL="${TOOL:-all}"
 RUN_BENCH="${RUN_BENCH:-1}"
 NSYS_CAPTURE_RANGE_NAME="${NSYS_CAPTURE_RANGE_NAME:-steady_state_capture}"
 declare -a FAILED_TARGETS=()
+declare -a SHARING_PROFILE_METHODS=(
+  baseline
+  stream_overlap
+  single_fused_half_split
+  single_fused_interleaved
+  physical_concat
+)
 
 # shellcheck disable=SC1091
 source "$ROOT_DIR/scripts/activate_local_venv.sh"
@@ -245,7 +253,7 @@ run_nsys_target() {
   local gpu_metrics_args=()
 
   if [[ -n "${GPU_METRICS_DEVICE:-}" ]]; then
-    gpu_metrics_args+=(--gpu-metrics-device="${GPU_METRICS_DEVICE}")
+    gpu_metrics_args+=(--gpu-metrics-devices="${GPU_METRICS_DEVICE}")
   fi
 
   rm -f \
@@ -538,7 +546,7 @@ run_profile_target() {
       ;;
     *)
       echo "不支持的 TOOL=$TOOL，请使用 all / nsys / ncu" >&2
-      exit 1
+      return 1
       ;;
   esac
 }
@@ -550,20 +558,19 @@ run_profile_methods_for_scenario() {
   local h="$4"
   local n="$5"
   local r="$6"
+  local method=""
   case "$PROFILE_METHOD" in
     all)
-      run_profile_target "$scenario" baseline "$output_root" "$m" "$h" "$n" "$r"
-      run_profile_target "$scenario" stream_overlap "$output_root" "$m" "$h" "$n" "$r"
-      run_profile_target "$scenario" single_fused_half_split "$output_root" "$m" "$h" "$n" "$r"
-      run_profile_target "$scenario" single_fused_interleaved "$output_root" "$m" "$h" "$n" "$r"
-      run_profile_target "$scenario" physical_concat "$output_root" "$m" "$h" "$n" "$r"
+      for method in "${SHARING_PROFILE_METHODS[@]}"; do
+        run_profile_target "$scenario" "$method" "$output_root" "$m" "$h" "$n" "$r"
+      done
       ;;
     baseline|stream_overlap|single_fused_half_split|single_fused_interleaved|physical_concat)
       run_profile_target "$scenario" "$PROFILE_METHOD" "$output_root" "$m" "$h" "$n" "$r"
       ;;
     *)
       echo "不支持的 PROFILE_METHOD=$PROFILE_METHOD" >&2
-      exit 1
+      return 1
       ;;
   esac
 }
@@ -597,13 +604,28 @@ run_scenario() {
   run_profile_methods_for_scenario "$scenario" "$output_root" "$m" "$h" "$n" "$r"
 }
 
+run_checked_scenario() {
+  local scenario="$1"
+  local scenario_status=0
+
+  set +e
+  run_scenario "$scenario"
+  scenario_status=$?
+  set -e
+
+  if [[ $scenario_status -ne 0 ]]; then
+    warn "sharing 场景 $scenario 执行失败，继续执行剩余场景。"
+    record_failure "scenario/$scenario：执行失败（退出码 $scenario_status）"
+  fi
+}
+
 case "$SCENARIO" in
   both)
-    run_scenario real_r8
-    run_scenario constructed_50_blocks
+    run_checked_scenario real_r8
+    run_checked_scenario constructed_50_blocks
     ;;
   real_r8|constructed_50_blocks)
-    run_scenario "$SCENARIO"
+    run_checked_scenario "$SCENARIO"
     ;;
   *)
     echo "不支持的 SCENARIO=$SCENARIO，请使用 both / real_r8 / constructed_50_blocks" >&2

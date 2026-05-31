@@ -66,6 +66,8 @@
   - sharing 统一改为新的场景脚本 `scripts/run_sharing_profile_cases.sh`
   - `ncu` 默认使用 `--set full`，并额外导出 `raw` / `details` 页面，补齐之前缺失的 detail 页面指标
   - `nsys` 输出按场景拆到不同目录，真实场景和构造场景不会再混在一起
+  - 默认入口现在会完整执行“两场景 x 五方法 x nsys+ncu”，不再只抓单一方法
+  - `GPU_METRICS_DEVICE=all` 会正确映射到 `nsys --gpu-metrics-devices=all`
 - 两种 fused 调度分别对应：
   - `single_fused_half_split`：前半 pid range 做 op1，后半 pid range 做 op3
   - `single_fused_interleaved`：四段 pid range 交错做 op1 / op3 / op1 / op3
@@ -135,10 +137,10 @@ profiling 输出目录：
 ```bash
 bash scripts/run_sharing_profile_cases.sh
 SCENARIO=real_r8 bash scripts/run_sharing_profile_cases.sh
-SCENARIO=constructed_50_blocks bash scripts/run_sharing_profile_cases.sh
-SCENARIO=constructed_50_blocks PROFILE_METHOD=all bash scripts/run_sharing_profile_cases.sh
+SCENARIO=constructed_50_blocks PROFILE_METHOD=physical_concat bash scripts/run_sharing_profile_cases.sh
 RUN_BENCH=0 TOOL=nsys bash scripts/run_sharing_profile_cases.sh
 RUN_BENCH=0 TOOL=ncu NCU_SET=full bash scripts/run_sharing_profile_cases.sh
+GPU_METRICS_DEVICE=all bash scripts/run_sharing_profile_cases.sh
 ```
 
 默认脚本会依次执行两个场景：
@@ -151,8 +153,9 @@ bash scripts/run_sharing_profile_cases.sh
 
 - `real_r8` 会复现真实 `r=8` 场景
 - `constructed_50_blocks` 会复现“两个 op 都约 50 block”的构造场景
-- `PROFILE_METHOD` 默认是 `stream_overlap`，因为这个场景最适合直接排查 `nsys` 里的双 stream 并发
+- `PROFILE_METHOD` 默认是 `all`，会依次执行 `baseline / stream_overlap / single_fused_half_split / single_fused_interleaved / physical_concat`
 - `ncu` 默认使用 `--set full`，会同时保留 `.ncu-rep` 与导出的 `details/raw` 页面 CSV
+- `GPU_METRICS_DEVICE=all bash scripts/run_sharing_profile_cases.sh` 会在两种场景下都开启 `nsys` GPU metrics 采集
 
 ## 输出目录规范
 
